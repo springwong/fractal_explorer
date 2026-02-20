@@ -14,10 +14,11 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba8unorm, write>;
 
-/// Mandelbrot set iteration with smooth coloring
-fn mandelbrot(cx: f32, cy: f32) -> f32 {
-    var zx: f32 = 0.0;
-    var zy: f32 = 0.0;
+/// Julia set iteration with smooth coloring
+/// For Julia sets, the initial z = pixel coordinate, c = fixed parameter
+fn julia(zx_init: f32, zy_init: f32, cx: f32, cy: f32) -> f32 {
+    var zx: f32 = zx_init;
+    var zy: f32 = zy_init;
     var iter: u32 = 0u;
 
     // Escape-time algorithm
@@ -38,11 +39,9 @@ fn mandelbrot(cx: f32, cy: f32) -> f32 {
     return f32(iter) + 1.0 - nu;
 }
 
-/// Smooth rainbow colorization
+/// Coloring functions (same as mandelbrot.wgsl)
 fn colorize_smooth(t: f32) -> vec4<f32> {
-    if t == 0.0 {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    }
+    if t == 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     let hue = fract(t * 0.05);
     let sat = 0.8;
     let val = 0.9;
@@ -62,34 +61,24 @@ fn colorize_smooth(t: f32) -> vec4<f32> {
     return vec4<f32>(rgb, 1.0);
 }
 
-/// Fire colorization
 fn colorize_fire(t: f32) -> vec4<f32> {
     if t == 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     let n = fract(t * 0.03);
-    let r = min(1.0, n * 2.0);
-    let g = max(0.0, min(1.0, (n - 0.3) * 2.5));
-    let b = max(0.0, min(1.0, (n - 0.7) * 3.3));
-    return vec4<f32>(r, g, b, 1.0);
+    return vec4<f32>(min(1.0, n * 2.0), max(0.0, min(1.0, (n - 0.3) * 2.5)), max(0.0, min(1.0, (n - 0.7) * 3.3)), 1.0);
 }
 
-/// Ocean colorization
 fn colorize_ocean(t: f32) -> vec4<f32> {
     if t == 0.0 { return vec4<f32>(0.0, 0.0, 0.1, 1.0); }
     let n = fract(t * 0.04);
-    let r = max(0.0, min(1.0, (n - 0.6) * 2.5));
-    let g = max(0.0, min(1.0, (n - 0.2) * 1.8));
-    let b = min(1.0, 0.3 + n * 0.7);
-    return vec4<f32>(r, g, b, 1.0);
+    return vec4<f32>(max(0.0, min(1.0, (n - 0.6) * 2.5)), max(0.0, min(1.0, (n - 0.2) * 1.8)), min(1.0, 0.3 + n * 0.7), 1.0);
 }
 
-/// Grayscale colorization
 fn colorize_grayscale(t: f32) -> vec4<f32> {
     if t == 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-    let intensity = fract(t * 0.05);
-    return vec4<f32>(intensity, intensity, intensity, 1.0);
+    let i = fract(t * 0.05);
+    return vec4<f32>(i, i, i, 1.0);
 }
 
-/// Main colorization dispatcher
 fn colorize(t: f32, scheme: u32) -> vec4<f32> {
     switch scheme {
         case 0u: { return colorize_smooth(t); }
@@ -110,12 +99,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     // Convert pixel coordinates to complex plane coordinates
-    // Center at origin, normalize by height to maintain aspect ratio
     let uv = (vec2<f32>(id.xy) - vec2<f32>(dims) / 2.0) / f32(dims.y);
-    let c = uniforms.center + (uv / uniforms.zoom) * vec2<f32>(1.0, -1.0);
+    let z_init = uniforms.center + (uv / uniforms.zoom) * vec2<f32>(1.0, -1.0);
 
-    // Calculate smooth iteration count
-    let smooth_val = mandelbrot(c.x, c.y);
+    // Calculate smooth iteration count using c from uniforms
+    let smooth_val = julia(z_init.x, z_init.y, uniforms.c_real, uniforms.c_imag);
 
     // Colorize and write to output texture
     let color = colorize(smooth_val, uniforms.color_scheme);

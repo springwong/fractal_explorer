@@ -1,9 +1,15 @@
 mod camera;
+mod coloring;
+mod fractals;
 mod renderer;
+mod ui;
 
 use camera::Camera;
+use coloring::ColorScheme;
+use fractals::FractalType;
 use glam::{UVec2, Vec2};
 use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline};
+use ui::{ControlPanel, UiContext};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -20,6 +26,7 @@ struct App<'window> {
     camera: Camera,
     compute: Option<ComputePipeline>,
     render: Option<RenderPipeline>,
+    ui: Option<UiContext>,
 
     // Input state
     mouse_pos: Vec2,
@@ -28,6 +35,8 @@ struct App<'window> {
 
     // Fractal parameters
     max_iter: u32,
+    current_fractal: FractalType,
+    current_color: ColorScheme,
 
     // FPS tracking
     last_frame_time: std::time::Instant,
@@ -43,10 +52,13 @@ impl<'window> App<'window> {
             camera: Camera::new(UVec2::new(1920, 1080)),
             compute: None,
             render: None,
+            ui: None,
             mouse_pos: Vec2::ZERO,
             mouse_pressed: false,
             last_mouse_pos: None,
             max_iter: 256,
+            current_fractal: FractalType::Mandelbrot,
+            current_color: ColorScheme::default(),
             last_frame_time: std::time::Instant::now(),
             frame_count: 0,
             fps: 0.0,
@@ -54,9 +66,29 @@ impl<'window> App<'window> {
     }
 
     fn render_frame(&mut self) {
+        let Some(ref window) = self.window else { return };
         let Some(ref gpu) = self.gpu else { return };
-        let Some(ref compute) = self.compute else { return };
+        let Some(ref mut compute) = self.compute else { return };
         let Some(ref render) = self.render else { return };
+        let Some(ref mut ui) = self.ui else { return };
+
+        // Begin egui frame
+        let raw_input = ui.begin_frame(window);
+        let full_output = ui.egui_ctx.run(raw_input, |ctx| {
+            // Show control panel
+            ControlPanel::show(
+                ctx,
+                &mut self.current_fractal,
+                &mut self.current_color,
+                &mut self.max_iter,
+                self.fps,
+                self.camera.center,
+                self.camera.zoom,
+            );
+        });
+
+        // Get fractal parameters
+        let params = self.current_fractal.params();
 
         // Update uniforms
         let uniforms = FractalUniforms::new(
@@ -64,6 +96,10 @@ impl<'window> App<'window> {
             self.camera.zoom as f32,
             self.camera.aspect_ratio(),
             self.max_iter,
+            self.current_fractal.type_id(),
+            self.current_color.to_id(),
+            params.c_real,
+            params.c_imag,
         );
         compute.update_uniforms(&gpu.queue, &uniforms);
 
@@ -91,14 +127,72 @@ impl<'window> App<'window> {
                 label: Some("Frame Command Encoder"),
             });
 
-        // Dispatch compute shader
-        compute.dispatch(&mut encoder, gpu.surface_config.width, gpu.surface_config.height);
+        // Dispatch compute shader with current fractal type
+        compute.dispatch(
+            &gpu.device,
+            &mut encoder,
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+            &self.current_fractal,
+        );
 
-        // Render to surface
+        // Render fractal to surface
         render.render(&mut encoder, &surface_view);
+
+        // Prepare egui for rendering
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [gpu.surface_config.width, gpu.surface_config.height],
+            pixels_per_point: window.scale_factor() as f32,
+        };
+
+        // Update egui textures
+        for (id, image_delta) in &full_output.textures_delta.set {
+            ui.egui_renderer.update_texture(
+                &gpu.device,
+                &gpu.queue,
+                *id,
+                image_delta,
+            );
+        }
+
+        // Tessellate egui primitives
+        let primitives = ui.tessellate(&full_output);
+
+        // Update egui buffers
+        ui.egui_renderer.update_buffers(
+            &gpu.device,
+            &gpu.queue,
+            &mut encoder,
+            &primitives,
+            &screen_descriptor,
+        );
+
+        // Render egui
+        {
+            let mut egui_rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Egui Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load, // Load existing fractal content
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            }).forget_lifetime();
+
+            ui.egui_renderer.render(&mut egui_rpass, &primitives, &screen_descriptor);
+        }
 
         // Submit commands
         gpu.queue.submit(std::iter::once(encoder.finish()));
+
+        // Cleanup egui resources
+        ui.finish(window, full_output);
+
         surface_texture.present();
 
         // Update FPS counter
@@ -147,13 +241,28 @@ impl<'window> App<'window> {
     }
 
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState) {
-        if button == MouseButton::Left {
-            self.mouse_pressed = state == ElementState::Pressed;
-            if self.mouse_pressed {
-                self.last_mouse_pos = Some(self.mouse_pos);
-            } else {
-                self.last_mouse_pos = None;
+        match button {
+            MouseButton::Left => {
+                self.mouse_pressed = state == ElementState::Pressed;
+                if self.mouse_pressed {
+                    self.last_mouse_pos = Some(self.mouse_pos);
+                } else {
+                    self.last_mouse_pos = None;
+                }
             }
+            MouseButton::Right if state == ElementState::Pressed => {
+                // Right-click sets Julia parameter to current mouse position
+                if let FractalType::Julia { ref mut c } = self.current_fractal {
+                    let complex_pos = self.camera.screen_to_complex(self.mouse_pos);
+                    *c = Vec2::new(complex_pos.x as f32, complex_pos.y as f32);
+                    log::info!(
+                        "Julia parameter updated: c = ({:.6}, {:.6})",
+                        c.x,
+                        c.y
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -198,11 +307,42 @@ impl<'window> App<'window> {
         }
 
         match event.logical_key {
+            // Switch to Mandelbrot
+            Key::Character(ref c) if c == "1" => {
+                self.current_fractal = FractalType::Mandelbrot;
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
+                log::info!("Switched to: {}", self.current_fractal.name());
+            }
+            // Switch to Julia
+            Key::Character(ref c) if c == "2" => {
+                self.current_fractal = FractalType::Julia {
+                    c: Vec2::new(-0.7, 0.27015),
+                };
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
+                log::info!("Switched to: {}", self.current_fractal.name());
+            }
+            // Switch to Burning Ship
+            Key::Character(ref c) if c == "3" => {
+                self.current_fractal = FractalType::BurningShip;
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
+                log::info!("Switched to: {}", self.current_fractal.name());
+            }
+            // Switch to Tricorn
+            Key::Character(ref c) if c == "4" => {
+                self.current_fractal = FractalType::Tricorn;
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
+                log::info!("Switched to: {}", self.current_fractal.name());
+            }
             // Reset view
             Key::Character(ref c) if c == "r" || c == "R" => {
-                self.camera.reset();
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
                 self.max_iter = 256;
-                log::info!("View reset");
+                log::info!("View reset for: {}", self.current_fractal.name());
             }
             // Increase iterations
             Key::Named(NamedKey::ArrowUp) => {
@@ -213,6 +353,11 @@ impl<'window> App<'window> {
             Key::Named(NamedKey::ArrowDown) => {
                 self.max_iter = self.max_iter.saturating_sub(64).max(64);
                 log::info!("Max iterations: {}", self.max_iter);
+            }
+            // Cycle color scheme
+            Key::Character(ref c) if c == "c" || c == "C" => {
+                self.current_color = self.current_color.next();
+                log::info!("Color scheme: {}", self.current_color.name());
             }
             _ => {}
         }
@@ -245,6 +390,10 @@ impl ApplicationHandler for App<'_> {
         // Create render pipeline
         let render = RenderPipeline::new(&gpu.device, gpu.surface_config.format, &compute.texture_view);
 
+        // Initialize egui
+        let ui = UiContext::new(&gpu.device, gpu.surface_config.format, &window);
+
+        self.ui = Some(ui);
         self.window = Some(window);
         self.gpu = Some(gpu);
         self.compute = Some(compute);
@@ -254,6 +403,27 @@ impl ApplicationHandler for App<'_> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: winit::window::WindowId, event: WindowEvent) {
+        // Let egui handle the event first
+        let egui_consumed = if let (Some(ref window), Some(ref mut ui)) = (&self.window, &mut self.ui) {
+            ui.handle_event(window, &event)
+        } else {
+            false
+        };
+
+        // Handle RedrawRequested regardless
+        if let WindowEvent::RedrawRequested = event {
+            self.render_frame();
+            if let Some(ref window) = self.window {
+                window.request_redraw();
+            }
+            return;
+        }
+
+        // If egui consumed the event, don't pass to app
+        if egui_consumed {
+            return;
+        }
+
         match event {
             WindowEvent::CloseRequested
             | WindowEvent::KeyboardInput {
