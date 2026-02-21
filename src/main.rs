@@ -447,8 +447,12 @@ impl<'window> App<'window> {
                 self.current_color = self.current_color.next();
                 log::info!("Color scheme: {}", self.current_color.name());
             }
-            // Screenshot at 1080p
+            // Pan down with S
             Key::Character(ref c) if c == "s" || c == "S" => {
+                self.camera.pan(Vec2::new(0.0, -80.0));
+            }
+            // Screenshot at 1080p
+            Key::Character(ref c) if c == "p" || c == "P" => {
                 self.pending_export = Some(ExportResolution::HD1080p);
                 log::info!("Screenshot requested (1080p)");
             }
