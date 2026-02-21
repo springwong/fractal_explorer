@@ -262,14 +262,14 @@ impl<'window> App<'window> {
                 self.current_fractal.name(),
                 &resolution,
             );
-            let path = std::path::Path::new(&filename);
+            let path = std::path::Path::new("export").join(&filename);
             match export::export_png(
                 &gpu.device,
                 &gpu.queue,
                 &self.current_fractal,
                 &self.last_uniforms,
                 resolution,
-                path,
+                &path,
             ) {
                 Ok(()) => log::info!("Export saved: {}", filename),
                 Err(e) => log::error!("Export failed: {}", e),

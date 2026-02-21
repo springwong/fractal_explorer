@@ -5,5 +5,8 @@ Cargo.lock
 *~
 .DS_Store
 
+# Exported images
+export/
+
 # Claude Code memory
 .claude/
