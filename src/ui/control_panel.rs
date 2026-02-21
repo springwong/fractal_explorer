@@ -1,6 +1,14 @@
 use crate::coloring::ColorScheme;
+use crate::export::ExportResolution;
 use crate::fractals::FractalType;
 use glam::Vec2;
+
+/// Action requested by the control panel
+#[derive(Clone, Debug)]
+pub enum PanelAction {
+    None,
+    Export(ExportResolution),
+}
 
 /// Control panel UI state and rendering
 pub struct ControlPanel;
@@ -15,8 +23,8 @@ impl ControlPanel {
         fps: f32,
         center: glam::DVec2,
         zoom: f64,
-    ) -> bool {
-        let mut changed = false;
+    ) -> PanelAction {
+        let mut action = PanelAction::None;
 
         egui::SidePanel::left("control_panel")
             .default_width(280.0)
@@ -43,20 +51,11 @@ impl ControlPanel {
 
                 // Fractal type selector
                 ui.heading("Fractal Type");
-                let old_fractal = fractal.clone();
 
-                if ui.radio_value(&mut *fractal, FractalType::Mandelbrot, "Mandelbrot Set").clicked() {
-                    changed = true;
-                }
-                if ui.radio_value(&mut *fractal, FractalType::Julia { c: Vec2::new(-0.7, 0.27015) }, "Julia Set").clicked() {
-                    changed = true;
-                }
-                if ui.radio_value(&mut *fractal, FractalType::BurningShip, "Burning Ship").clicked() {
-                    changed = true;
-                }
-                if ui.radio_value(&mut *fractal, FractalType::Tricorn, "Tricorn").clicked() {
-                    changed = true;
-                }
+                ui.radio_value(&mut *fractal, FractalType::Mandelbrot, "Mandelbrot Set");
+                ui.radio_value(&mut *fractal, FractalType::Julia { c: Vec2::new(-0.7, 0.27015) }, "Julia Set");
+                ui.radio_value(&mut *fractal, FractalType::BurningShip, "Burning Ship");
+                ui.radio_value(&mut *fractal, FractalType::Tricorn, "Tricorn");
 
                 // Julia parameters
                 if let FractalType::Julia { ref mut c } = fractal {
@@ -82,9 +81,7 @@ impl ControlPanel {
                 // Color scheme
                 ui.heading("Color Scheme");
                 for scheme in ColorScheme::all() {
-                    if ui.radio_value(&mut *color_scheme, *scheme, scheme.name()).clicked() {
-                        changed = true;
-                    }
+                    ui.radio_value(&mut *color_scheme, *scheme, scheme.name());
                 }
 
                 ui.separator();
@@ -96,19 +93,38 @@ impl ControlPanel {
 
                 ui.separator();
 
+                // Export section
+                ui.heading("Export");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Save PNG (1080p)").clicked() {
+                        action = PanelAction::Export(ExportResolution::HD1080p);
+                    }
+                    if ui.button("Save 4K PNG").clicked() {
+                        action = PanelAction::Export(ExportResolution::UHD4K);
+                    }
+                    if ui.button("Save 8K PNG").clicked() {
+                        action = PanelAction::Export(ExportResolution::UHD8K);
+                    }
+                });
+                ui.small("Keyboard: S = screenshot, E = 4K export");
+
+                ui.separator();
+
                 // Keyboard shortcuts
                 ui.heading("Keyboard Shortcuts");
                 ui.label("1-4: Switch fractal type");
                 ui.label("C: Cycle color scheme");
                 ui.label("R: Reset view");
+                ui.label("S: Save screenshot (1080p)");
+                ui.label("E: Export 4K PNG");
                 ui.label("↑/↓: Adjust iterations");
                 ui.label("Esc: Exit");
 
                 ui.separator();
 
-                ui.small("Phase 2 Implementation");
+                ui.small("Phase 3 Implementation");
             });
 
-        changed
+        action
     }
 }

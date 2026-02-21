@@ -18,11 +18,12 @@ impl Fractal for BurningShip {
     }
 
     fn default_center(&self) -> DVec2 {
-        DVec2::new(-0.5, -0.5)
+        // Classic "burning ship" view at the bottom of the main body
+        DVec2::new(-1.755, -0.035)
     }
 
     fn default_zoom(&self) -> f64 {
-        0.35
+        150.0  // Zoomed in to show the ship detail
     }
 
     fn name(&self) -> &'static str {

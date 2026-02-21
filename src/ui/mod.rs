@@ -1,7 +1,7 @@
 /// UI module for egui integration
 mod control_panel;
 
-pub use control_panel::ControlPanel;
+pub use control_panel::{ControlPanel, PanelAction};
 
 use egui_winit::State as EguiState;
 

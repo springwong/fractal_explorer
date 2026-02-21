@@ -14,6 +14,7 @@ env_logger = "0.11"
 egui = "0.29"
 egui-wgpu = "0.29"
 egui-winit = "0.29"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.release]
 opt-level = 3

@@ -1,5 +1,6 @@
 mod camera;
 mod coloring;
+mod export;
 mod fractals;
 mod renderer;
 mod ui;
@@ -9,7 +10,8 @@ use coloring::ColorScheme;
 use fractals::FractalType;
 use glam::{UVec2, Vec2};
 use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline};
-use ui::{ControlPanel, UiContext};
+use export::ExportResolution;
+use ui::{ControlPanel, PanelAction, UiContext};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -38,6 +40,10 @@ struct App<'window> {
     current_fractal: FractalType,
     current_color: ColorScheme,
 
+    // Export state
+    pending_export: Option<ExportResolution>,
+    last_uniforms: FractalUniforms,
+
     // FPS tracking
     last_frame_time: std::time::Instant,
     frame_count: u32,
@@ -59,6 +65,8 @@ impl<'window> App<'window> {
             max_iter: 256,
             current_fractal: FractalType::Mandelbrot,
             current_color: ColorScheme::default(),
+            pending_export: None,
+            last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0),
             last_frame_time: std::time::Instant::now(),
             frame_count: 0,
             fps: 0.0,
@@ -74,9 +82,10 @@ impl<'window> App<'window> {
 
         // Begin egui frame
         let raw_input = ui.begin_frame(window);
+        let mut panel_action = PanelAction::None;
         let full_output = ui.egui_ctx.run(raw_input, |ctx| {
             // Show control panel
-            ControlPanel::show(
+            panel_action = ControlPanel::show(
                 ctx,
                 &mut self.current_fractal,
                 &mut self.current_color,
@@ -86,6 +95,11 @@ impl<'window> App<'window> {
                 self.camera.zoom,
             );
         });
+
+        // Handle panel export action
+        if let PanelAction::Export(resolution) = panel_action {
+            self.pending_export = Some(resolution);
+        }
 
         // Get fractal parameters
         let params = self.current_fractal.params();
@@ -102,6 +116,7 @@ impl<'window> App<'window> {
             params.c_imag,
         );
         compute.update_uniforms(&gpu.queue, &uniforms);
+        self.last_uniforms = uniforms;
 
         // Get surface texture
         let surface_texture = match gpu.get_current_texture() {
@@ -194,6 +209,26 @@ impl<'window> App<'window> {
         ui.finish(window, full_output);
 
         surface_texture.present();
+
+        // Process pending export
+        if let Some(resolution) = self.pending_export.take() {
+            let filename = export::generate_filename(
+                self.current_fractal.name(),
+                &resolution,
+            );
+            let path = std::path::Path::new(&filename);
+            match export::export_png(
+                &gpu.device,
+                &gpu.queue,
+                &self.current_fractal,
+                &self.last_uniforms,
+                resolution,
+                path,
+            ) {
+                Ok(()) => log::info!("Export saved: {}", filename),
+                Err(e) => log::error!("Export failed: {}", e),
+            }
+        }
 
         // Update FPS counter
         self.frame_count += 1;
@@ -358,6 +393,16 @@ impl<'window> App<'window> {
             Key::Character(ref c) if c == "c" || c == "C" => {
                 self.current_color = self.current_color.next();
                 log::info!("Color scheme: {}", self.current_color.name());
+            }
+            // Screenshot at 1080p
+            Key::Character(ref c) if c == "s" || c == "S" => {
+                self.pending_export = Some(ExportResolution::HD1080p);
+                log::info!("Screenshot requested (1080p)");
+            }
+            // Export 4K PNG
+            Key::Character(ref c) if c == "e" || c == "E" => {
+                self.pending_export = Some(ExportResolution::UHD4K);
+                log::info!("Export requested (4K)");
             }
             _ => {}
         }
