@@ -14,7 +14,9 @@ struct Uniforms {
     pixel_step_x: f32,       // offset 48, 4 bytes
     pixel_step_y: f32,       // offset 52, 4 bytes
     ref_escape_iter: u32,    // offset 56, 4 bytes
-    _pad: u32,               // offset 60, 4 bytes
+    rotation: f32,           // offset 60, 4 bytes
+    _pad2: vec3<u32>,        // offset 64, 12 bytes
+    _pad3: u32,              // offset 76, 4 bytes
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -118,7 +120,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Convert pixel coordinates to complex plane coordinates
     // Center at origin, normalize by height to maintain aspect ratio
     let uv = (vec2<f32>(id.xy) - vec2<f32>(dims) / 2.0) / f32(dims.y);
-    let c = uniforms.center + (uv / uniforms.zoom) * vec2<f32>(1.0, -1.0);
+    let cos_r = cos(uniforms.rotation);
+    let sin_r = sin(uniforms.rotation);
+    let rotated = vec2<f32>(uv.x * cos_r - uv.y * sin_r, uv.x * sin_r + uv.y * cos_r);
+    let c = uniforms.center + (rotated / uniforms.zoom) * vec2<f32>(1.0, -1.0);
 
     // Calculate smooth iteration count
     let smooth_val = mandelbrot(c.x, c.y);

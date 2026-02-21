@@ -15,7 +15,9 @@ struct Uniforms {
     pixel_step_x: f32,
     pixel_step_y: f32,
     ref_escape_iter: u32,
-    _pad: u32,
+    rotation: f32,
+    _pad2: vec3<u32>,
+    _pad3: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -147,8 +149,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(output_texture);
     if id.x >= dims.x || id.y >= dims.y { return; }
 
-    let pixel_offset_x = (f32(id.x) - f32(dims.x) / 2.0) / f32(dims.y);
-    let pixel_offset_y = (f32(id.y) - f32(dims.y) / 2.0) / f32(dims.y);
+    let px = (f32(id.x) - f32(dims.x) / 2.0) / f32(dims.y);
+    let py = (f32(id.y) - f32(dims.y) / 2.0) / f32(dims.y);
+    let cos_r = cos(uniforms.rotation);
+    let sin_r = sin(uniforms.rotation);
+    let pixel_offset_x = px * cos_r - py * sin_r;
+    let pixel_offset_y = px * sin_r + py * cos_r;
 
     let offset_x_ds = ds_div(pixel_offset_x, 0.0, uniforms.zoom, uniforms.zoom_lo);
     let offset_y_ds = ds_div(-pixel_offset_y, 0.0, uniforms.zoom, uniforms.zoom_lo);

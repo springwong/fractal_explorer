@@ -75,6 +75,7 @@ pub fn export_png(
         export_pixel_step_x,
         export_pixel_step_y,
         uniforms.ref_escape_iter,
+        uniforms.rotation,
     );
 
     // Create uniform buffer

@@ -16,7 +16,9 @@ struct Uniforms {
     pixel_step_x: f32,       // offset 48, 4 bytes (1.0 / (zoom * height), computed on CPU in f64)
     pixel_step_y: f32,       // offset 52, 4 bytes (-1.0 / (zoom * height), computed on CPU in f64)
     ref_escape_iter: u32,    // offset 56, 4 bytes
-    _pad: u32,               // offset 60, 4 bytes
+    rotation: f32,           // offset 60, 4 bytes
+    _pad2: vec3<u32>,        // offset 64, 12 bytes
+    _pad3: u32,              // offset 76, 4 bytes
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -172,8 +174,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Per-pixel delta from center, computed using pixel_step (calculated on CPU in f64)
     let px = f32(id.x) - f32(dims.x) / 2.0;
     let py = f32(id.y) - f32(dims.y) / 2.0;
-    let delta_x = px * uniforms.pixel_step_x;
-    let delta_y = py * uniforms.pixel_step_y;
+    let cos_r = cos(uniforms.rotation);
+    let sin_r = sin(uniforms.rotation);
+    let rpx = px * cos_r - py * sin_r;
+    let rpy = px * sin_r + py * cos_r;
+    let delta_x = rpx * uniforms.pixel_step_x;
+    let delta_y = rpy * uniforms.pixel_step_y;
 
     let smooth_val = mandelbrot_perturbation(delta_x, delta_y);
 

@@ -7,6 +7,8 @@ pub struct Camera {
     pub center: DVec2,
     /// Zoom level (higher = more zoomed in)
     pub zoom: f64,
+    /// Rotation angle in radians
+    pub rotation: f64,
     /// Screen dimensions in pixels
     pub screen_size: UVec2,
 }
@@ -17,6 +19,7 @@ impl Camera {
         Self {
             center: DVec2::new(-0.5, 0.0), // Classic Mandelbrot center
             zoom: 1.0,
+            rotation: 0.0,
             screen_size,
         }
     }
@@ -74,6 +77,7 @@ impl Camera {
     pub fn reset(&mut self) {
         self.center = DVec2::new(-0.5, 0.0);
         self.zoom = 1.0;
+        self.rotation = 0.0;
     }
 
     /// Get current aspect ratio

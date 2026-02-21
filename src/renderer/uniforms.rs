@@ -1,7 +1,7 @@
 /// GPU uniform buffer for fractal rendering
 /// Must maintain 16-byte alignment for WGSL compatibility
 ///
-/// WGSL struct layout (64 bytes total):
+/// WGSL struct layout (80 bytes total):
 /// offset 0:  center (vec2<f32>) - 8 bytes
 /// offset 8:  zoom (f32) - 4 bytes
 /// offset 12: aspect_ratio (f32) - 4 bytes
@@ -16,7 +16,9 @@
 /// offset 48: pixel_step_x (f32) - 4 bytes (per-pixel step in x, computed on CPU in f64)
 /// offset 52: pixel_step_y (f32) - 4 bytes (per-pixel step in y, computed on CPU in f64)
 /// offset 56: ref_escape_iter (u32) - 4 bytes (iteration where reference orbit escapes)
-/// offset 60: _pad (u32) - 4 bytes
+/// offset 60: rotation (f32) - 4 bytes (view rotation in radians)
+/// offset 64: _pad2 ([u32; 3]) - 12 bytes (padding to 80 bytes, 16-byte aligned)
+/// offset 76: _pad3 (u32) - 4 bytes
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FractalUniforms {
@@ -48,8 +50,11 @@ pub struct FractalUniforms {
     pub pixel_step_y: f32,
     /// Iteration where reference orbit escapes (or max_iter if it doesn't)
     pub ref_escape_iter: u32,
-    /// Padding to maintain 64-byte alignment
-    pub _pad: u32,
+    /// View rotation angle in radians
+    pub rotation: f32,
+    /// Padding to maintain 80-byte alignment (16-byte boundary)
+    pub _pad2: [u32; 3],
+    pub _pad3: u32,
 }
 
 impl FractalUniforms {
@@ -67,6 +72,7 @@ impl FractalUniforms {
         pixel_step_x: f32,
         pixel_step_y: f32,
         ref_escape_iter: u32,
+        rotation: f32,
     ) -> Self {
         Self {
             center,
@@ -83,7 +89,9 @@ impl FractalUniforms {
             pixel_step_x,
             pixel_step_y,
             ref_escape_iter,
-            _pad: 0,
+            rotation,
+            _pad2: [0; 3],
+            _pad3: 0,
         }
     }
 }
@@ -182,5 +190,5 @@ pub fn compute_reference_orbit_julia(
 }
 
 // Compile-time assertion for size (must match WGSL layout)
-const _: () = assert!(std::mem::size_of::<FractalUniforms>() == 64);
+const _: () = assert!(std::mem::size_of::<FractalUniforms>() == 80);
 const _: () = assert!(std::mem::size_of::<FractalUniforms>() % 16 == 0);

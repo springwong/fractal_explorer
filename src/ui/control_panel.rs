@@ -23,6 +23,7 @@ impl ControlPanel {
         fps: f32,
         center: glam::DVec2,
         zoom: f64,
+        rotation: f64,
         using_f64: bool,
     ) -> PanelAction {
         let mut action = PanelAction::None;
@@ -91,6 +92,7 @@ impl ControlPanel {
                 ui.heading("Camera");
                 ui.label(format!("Center: ({:.6}, {:.6})", center.x, center.y));
                 ui.label(format!("Zoom: {:.2e}", zoom));
+                ui.label(format!("Rotation: {:.1}°", rotation.to_degrees()));
                 ui.horizontal(|ui| {
                     ui.label("Precision:");
                     if using_f64 {
@@ -115,7 +117,7 @@ impl ControlPanel {
                         action = PanelAction::Export(ExportResolution::UHD8K);
                     }
                 });
-                ui.small("Keyboard: S = screenshot, E = 4K export");
+                ui.small("Keyboard: P = screenshot");
 
                 ui.separator();
 
@@ -124,8 +126,11 @@ impl ControlPanel {
                 ui.label("1-4: Switch fractal type");
                 ui.label("C: Cycle color scheme");
                 ui.label("R: Reset view");
-                ui.label("S: Save screenshot (1080p)");
-                ui.label("E: Export 4K PNG");
+                ui.label("Q/E: Rotate left/right");
+                ui.label("T/G: Zoom in/out");
+                ui.label("J/L: Julia c real -/+");
+                ui.label("I/K: Julia c imag +/-");
+                ui.label("P: Save screenshot (1080p)");
                 ui.label("↑/↓: Adjust iterations");
                 ui.label("Esc: Exit");
 

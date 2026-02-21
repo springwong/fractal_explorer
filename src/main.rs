@@ -66,7 +66,7 @@ impl<'window> App<'window> {
             current_fractal: FractalType::Mandelbrot,
             current_color: ColorScheme::default(),
             pending_export: None,
-            last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0),
+            last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0, 0.0),
             last_frame_time: std::time::Instant::now(),
             frame_count: 0,
             fps: 0.0,
@@ -94,6 +94,7 @@ impl<'window> App<'window> {
                 self.fps,
                 self.camera.center,
                 self.camera.zoom,
+                self.camera.rotation,
                 using_f64,
             );
         });
@@ -158,6 +159,7 @@ impl<'window> App<'window> {
             pixel_step_x,
             pixel_step_y,
             ref_escape_iter,
+            self.camera.rotation as f32,
         );
         compute.update_uniforms(&gpu.queue, &uniforms);
         self.last_uniforms = uniforms;
@@ -422,6 +424,7 @@ impl<'window> App<'window> {
             Key::Character(ref c) if c == "r" || c == "R" => {
                 self.camera.center = self.current_fractal.default_center();
                 self.camera.zoom = self.current_fractal.default_zoom();
+                self.camera.rotation = 0.0;
                 self.max_iter = 256;
                 log::info!("View reset for: {}", self.current_fractal.name());
             }
@@ -456,10 +459,10 @@ impl<'window> App<'window> {
                 self.pending_export = Some(ExportResolution::HD1080p);
                 log::info!("Screenshot requested (1080p)");
             }
-            // Export 4K PNG
+            // Rotate view: E = anticlockwise
             Key::Character(ref c) if c == "e" || c == "E" => {
-                self.pending_export = Some(ExportResolution::UHD4K);
-                log::info!("Export requested (4K)");
+                self.camera.rotation -= 0.05;
+                log::info!("Rotation: {:.1}°", self.camera.rotation.to_degrees());
             }
             // Pan with WASD
             Key::Character(ref c) if c == "w" || c == "W" => {
@@ -477,11 +480,21 @@ impl<'window> App<'window> {
             Key::Character(ref c) if c == "d" || c == "D" => {
                 self.camera.pan(Vec2::new(-80.0, 0.0));
             }
-            // Zoom in/out with Q/Z (centered on screen)
+            // Rotate view: Q = clockwise
             Key::Character(ref c) if c == "q" || c == "Q" => {
+                self.camera.rotation += 0.05;
+                log::info!("Rotation: {:.1}°", self.camera.rotation.to_degrees());
+            }
+            // Zoom in/out with T/G (centered on screen)
+            Key::Character(ref c) if c == "t" || c == "T" => {
                 let screen_center = self.camera.screen_size.as_vec2() / 2.0;
                 self.camera.zoom_at(screen_center, 1.5);
             }
+            Key::Character(ref c) if c == "g" || c == "G" => {
+                let screen_center = self.camera.screen_size.as_vec2() / 2.0;
+                self.camera.zoom_at(screen_center, 1.0 / 1.5);
+            }
+            // Zoom out with Z
             Key::Character(ref c) if c == "z" || c == "Z" => {
                 let screen_center = self.camera.screen_size.as_vec2() / 2.0;
                 self.camera.zoom_at(screen_center, 1.0 / 1.5);
