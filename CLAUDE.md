@@ -239,14 +239,19 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 | 按鍵 | 動作 |
 |------|------|
-| `1`–`5` | 切換 fractal 類型 |
-| `↑` / `↓` | 增減最大迭代次數 (+/- 64) |
+| `1` | Mandelbrot Set |
+| `2` | Julia Set |
+| `3` | Burning Ship |
+| `4` | Tricorn |
+| `5` | Buddhabrot |
+| `+` / `-` | 增減最大迭代次數 (+/- 64) |
 | `R` | 重置視圖 |
-| `S` | 截圖 PNG |
-| `E` | 導出 4K PNG |
-| `Space` | 暫停 / 繼續動畫 |
-| `F` | 全螢幕 |
+| `P` | 截圖 PNG (1080p) |
 | `C` | 切換配色方案 |
+| `Q` / `E` | 旋轉視圖 (左/右) |
+| `T` / `G` | 縮放 (放大/縮小) |
+| `J` / `L` | Julia c 實部 -/+ |
+| `I` / `K` | Julia c 虛部 +/- |
 
 ### 滑鼠操作
 
@@ -284,9 +289,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 **完成標準：** 即時切換 fractal，Julia c 參數可用滑鼠調整
 
 ### Phase 3：進階功能
-- [ ] 高解析度 PNG 導出（4K / 8K）
-- [ ] f64 精度 / emulated double（深度縮放）
-- [ ] Buddhabrot（accumulation buffer 模式）
+- [x] 高解析度 PNG 導出（4K / 8K）
+- [x] f64 精度 / emulated double（深度縮放）
+- [x] Buddhabrot（accumulation buffer 模式）
 - [ ] Nova Fractal
 - [ ] 自訂 Palette 編輯器
 - [ ] Mandelbrot / Julia 聯動模式
@@ -294,12 +299,24 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 **完成標準：** 支援至少 6 種 fractal，可導出高品質輸出
 
+**Buddhabrot 實現細節：**
+- 雙通道渲染：accumulation pass + tonemap pass
+- 原子累加緩衝區（atomic u32 per pixel）
+- 每幀 65536 個隨機樣本漸進式累積
+- 視圖變更時自動清除累積緩衝區
+- 支援旋轉、縮放、平移
+- 專用配色方案（Nebula、Fire、Ocean、Grayscale）
+
 ### Phase 4：優化
 - [ ] Perturbation Theory（超深度縮放 1e-100+）
 - [ ] 漸進式渲染（低解析度先顯示，逐步細化）
 - [ ] 書籤系統（保存 / 載入位置）
 - [ ] 參數動畫
 - [ ] WebAssembly 支援
+
+### Phase 5：低優先級（Low Priority）
+- [ ] Burning Ship perturbation theory f64（目前使用 Dekker emulated double，精度有限）
+- [ ] Tricorn perturbation theory f64（目前使用 Dekker emulated double，精度有限）
 
 ---
 

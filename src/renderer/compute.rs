@@ -21,6 +21,21 @@ pub struct ComputePipeline {
     perturbation_bind_group: wgpu::BindGroup,
     perturbation_pipeline_layout: wgpu::PipelineLayout,
 
+    // Buddhabrot accumulation buffer and pipelines
+    accum_buffer: wgpu::Buffer,
+    buddhabrot_accum_bind_group_layout: wgpu::BindGroupLayout,
+    buddhabrot_accum_bind_group: wgpu::BindGroup,
+    buddhabrot_accum_pipeline_layout: wgpu::PipelineLayout,
+    buddhabrot_accum_pipeline: Option<wgpu::ComputePipeline>,
+    buddhabrot_tonemap_bind_group_layout: wgpu::BindGroupLayout,
+    buddhabrot_tonemap_bind_group: wgpu::BindGroup,
+    buddhabrot_tonemap_pipeline_layout: wgpu::PipelineLayout,
+    buddhabrot_tonemap_pipeline: Option<wgpu::ComputePipeline>,
+    accum_width: u32,
+    accum_height: u32,
+    /// Total accumulated sample batches for Buddhabrot
+    pub accum_sample_count: u32,
+
     // Pipeline caching: key is (fractal_type_id, is_f64)
     pipeline_cache: HashMap<(u32, bool), wgpu::ComputePipeline>,
     pipeline_layout: wgpu::PipelineLayout,
@@ -181,6 +196,125 @@ impl ComputePipeline {
             push_constant_ranges: &[],
         });
 
+        // --- Buddhabrot accumulation buffer and bind groups ---
+        let accum_buffer_size = (width * height * 4) as u64; // one u32 per pixel
+        let accum_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Buddhabrot Accumulation Buffer"),
+            size: accum_buffer_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Accumulation pass bind group layout: uniform + accum_buf (read_write)
+        let buddhabrot_accum_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Buddhabrot Accum Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let buddhabrot_accum_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Buddhabrot Accum Bind Group"),
+            layout: &buddhabrot_accum_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: accum_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let buddhabrot_accum_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Buddhabrot Accum Pipeline Layout"),
+            bind_group_layouts: &[&buddhabrot_accum_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        // Tonemap pass bind group layout: uniform + output_texture + accum_buf (read)
+        let buddhabrot_tonemap_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Buddhabrot Tonemap Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let buddhabrot_tonemap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Buddhabrot Tonemap Bind Group"),
+            layout: &buddhabrot_tonemap_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: accum_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let buddhabrot_tonemap_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Buddhabrot Tonemap Pipeline Layout"),
+            bind_group_layouts: &[&buddhabrot_tonemap_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
         log::info!("Compute pipeline created: {}x{}", width, height);
 
         Self {
@@ -193,6 +327,18 @@ impl ComputePipeline {
             perturbation_bind_group_layout,
             perturbation_bind_group,
             perturbation_pipeline_layout,
+            accum_buffer,
+            buddhabrot_accum_bind_group_layout,
+            buddhabrot_accum_bind_group,
+            buddhabrot_accum_pipeline_layout,
+            buddhabrot_accum_pipeline: None,
+            buddhabrot_tonemap_bind_group_layout,
+            buddhabrot_tonemap_bind_group,
+            buddhabrot_tonemap_pipeline_layout,
+            buddhabrot_tonemap_pipeline: None,
+            accum_width: width,
+            accum_height: height,
+            accum_sample_count: 0,
             pipeline_cache: HashMap::new(),
             pipeline_layout,
             current_fractal_type: 0,
@@ -309,6 +455,89 @@ impl ComputePipeline {
         compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
     }
 
+    /// Clear the Buddhabrot accumulation buffer (zero-fill)
+    pub fn clear_accum_buffer(&mut self, queue: &wgpu::Queue) {
+        let size = (self.accum_width * self.accum_height * 4) as usize;
+        let zeros = vec![0u8; size];
+        queue.write_buffer(&self.accum_buffer, 0, &zeros);
+        self.accum_sample_count = 0;
+        log::info!("Buddhabrot accumulation buffer cleared");
+    }
+
+    /// Dispatch Buddhabrot accumulation + tonemap passes
+    pub fn dispatch_buddhabrot(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        width: u32,
+        height: u32,
+    ) {
+        // Lazily create accumulation pipeline
+        if self.buddhabrot_accum_pipeline.is_none() {
+            let shader_source = include_str!("../shaders/buddhabrot.wgsl");
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Buddhabrot Accum Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
+            self.buddhabrot_accum_pipeline = Some(device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Buddhabrot Accum Pipeline"),
+                layout: Some(&self.buddhabrot_accum_pipeline_layout),
+                module: &shader,
+                entry_point: "main",
+                compilation_options: Default::default(),
+                cache: None,
+            }));
+            log::info!("Created Buddhabrot accumulation pipeline");
+        }
+
+        // Lazily create tonemap pipeline
+        if self.buddhabrot_tonemap_pipeline.is_none() {
+            let shader_source = include_str!("../shaders/buddhabrot_tonemap.wgsl");
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Buddhabrot Tonemap Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
+            self.buddhabrot_tonemap_pipeline = Some(device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Buddhabrot Tonemap Pipeline"),
+                layout: Some(&self.buddhabrot_tonemap_pipeline_layout),
+                module: &shader,
+                entry_point: "main",
+                compilation_options: Default::default(),
+                cache: None,
+            }));
+            log::info!("Created Buddhabrot tonemap pipeline");
+        }
+
+        // Accumulation pass: dispatch 1D, each thread = one random sample
+        // Use 65536 samples per frame for progressive refinement
+        let num_samples: u32 = 65536;
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Buddhabrot Accum Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(self.buddhabrot_accum_pipeline.as_ref().unwrap());
+            compute_pass.set_bind_group(0, &self.buddhabrot_accum_bind_group, &[]);
+            let workgroup_count = (num_samples + 255) / 256;
+            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        }
+
+        // Tonemap pass: 2D dispatch, one thread per pixel
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Buddhabrot Tonemap Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(self.buddhabrot_tonemap_pipeline.as_ref().unwrap());
+            compute_pass.set_bind_group(0, &self.buddhabrot_tonemap_bind_group, &[]);
+            let workgroup_count_x = (width + 15) / 16;
+            let workgroup_count_y = (height + 15) / 16;
+            compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
+        }
+
+        self.accum_sample_count += 1;
+    }
+
     /// Recreate textures on resize
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         // Recreate storage texture
@@ -363,6 +592,52 @@ impl ComputePipeline {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.orbit_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Recreate Buddhabrot accumulation buffer and bind groups
+        let accum_buffer_size = (width * height * 4) as u64;
+        self.accum_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Buddhabrot Accumulation Buffer"),
+            size: accum_buffer_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.accum_width = width;
+        self.accum_height = height;
+        self.accum_sample_count = 0;
+
+        self.buddhabrot_accum_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Buddhabrot Accum Bind Group"),
+            layout: &self.buddhabrot_accum_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.accum_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.buddhabrot_tonemap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Buddhabrot Tonemap Bind Group"),
+            layout: &self.buddhabrot_tonemap_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.accum_buffer.as_entire_binding(),
                 },
             ],
         });

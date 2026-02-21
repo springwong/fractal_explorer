@@ -3,11 +3,13 @@ mod mandelbrot;
 mod julia;
 mod burning_ship;
 mod tricorn;
+mod buddhabrot;
 
 pub use mandelbrot::Mandelbrot;
 pub use julia::Julia;
 pub use burning_ship::BurningShip;
 pub use tricorn::Tricorn;
+pub use buddhabrot::Buddhabrot;
 
 use glam::{DVec2, Vec2};
 
@@ -58,6 +60,7 @@ pub enum FractalType {
     Julia { c: Vec2 },
     BurningShip,
     Tricorn,
+    Buddhabrot,
 }
 
 impl FractalType {
@@ -68,6 +71,7 @@ impl FractalType {
             FractalType::Julia { .. } => 1,
             FractalType::BurningShip => 2,
             FractalType::Tricorn => 3,
+            FractalType::Buddhabrot => 4,
         }
     }
 
@@ -81,6 +85,7 @@ impl FractalType {
             },
             FractalType::BurningShip => FractalParams::default(),
             FractalType::Tricorn => FractalParams::default(),
+            FractalType::Buddhabrot => FractalParams::default(),
         }
     }
 
@@ -91,6 +96,7 @@ impl FractalType {
             FractalType::Julia { .. } => Julia::default().default_center(),
             FractalType::BurningShip => BurningShip.default_center(),
             FractalType::Tricorn => Tricorn.default_center(),
+            FractalType::Buddhabrot => Buddhabrot.default_center(),
         }
     }
 
@@ -101,6 +107,7 @@ impl FractalType {
             FractalType::Julia { .. } => Julia::default().default_zoom(),
             FractalType::BurningShip => BurningShip.default_zoom(),
             FractalType::Tricorn => Tricorn.default_zoom(),
+            FractalType::Buddhabrot => Buddhabrot.default_zoom(),
         }
     }
 
@@ -111,6 +118,7 @@ impl FractalType {
             FractalType::Julia { .. } => Julia::default().shader_source(),
             FractalType::BurningShip => BurningShip.shader_source(),
             FractalType::Tricorn => Tricorn.shader_source(),
+            FractalType::Buddhabrot => Buddhabrot.shader_source(),
         }
     }
 
@@ -121,6 +129,7 @@ impl FractalType {
             FractalType::Julia { .. } => Julia::default().shader_source_f64(),
             FractalType::BurningShip => BurningShip.shader_source_f64(),
             FractalType::Tricorn => Tricorn.shader_source_f64(),
+            FractalType::Buddhabrot => Buddhabrot.shader_source_f64(),
         }
     }
 
@@ -131,6 +140,12 @@ impl FractalType {
             FractalType::Julia { .. } => "Julia Set",
             FractalType::BurningShip => "Burning Ship",
             FractalType::Tricorn => "Tricorn",
+            FractalType::Buddhabrot => "Buddhabrot",
         }
+    }
+
+    /// Whether this fractal type uses accumulation buffer rendering
+    pub fn is_buddhabrot(&self) -> bool {
+        matches!(self, FractalType::Buddhabrot)
     }
 }

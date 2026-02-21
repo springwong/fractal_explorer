@@ -58,6 +58,7 @@ impl ControlPanel {
                 ui.radio_value(&mut *fractal, FractalType::Julia { c: Vec2::new(-0.7, 0.27015) }, "Julia Set");
                 ui.radio_value(&mut *fractal, FractalType::BurningShip, "Burning Ship");
                 ui.radio_value(&mut *fractal, FractalType::Tricorn, "Tricorn");
+                ui.radio_value(&mut *fractal, FractalType::Buddhabrot, "Buddhabrot");
 
                 // Julia parameters
                 if let FractalType::Julia { ref mut c } = fractal {
@@ -123,7 +124,7 @@ impl ControlPanel {
 
                 // Keyboard shortcuts
                 ui.heading("Keyboard Shortcuts");
-                ui.label("1-4: Switch fractal type");
+                ui.label("1-5: Switch fractal type");
                 ui.label("C: Cycle color scheme");
                 ui.label("R: Reset view");
                 ui.label("Q/E: Rotate left/right");
