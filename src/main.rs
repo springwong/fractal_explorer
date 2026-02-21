@@ -425,15 +425,22 @@ impl<'window> App<'window> {
                 self.max_iter = 256;
                 log::info!("View reset for: {}", self.current_fractal.name());
             }
-            // Increase iterations
-            Key::Named(NamedKey::ArrowUp) => {
+            // Increase iterations (+/=)
+            Key::Character(ref c) if c == "=" || c == "+" => {
                 self.max_iter = (self.max_iter + 64).min(4096);
                 log::info!("Max iterations: {}", self.max_iter);
             }
-            // Decrease iterations
-            Key::Named(NamedKey::ArrowDown) => {
+            // Decrease iterations (-)
+            Key::Character(ref c) if c == "-" || c == "_" => {
                 self.max_iter = self.max_iter.saturating_sub(64).max(64);
                 log::info!("Max iterations: {}", self.max_iter);
+            }
+            // Pan with arrow keys
+            Key::Named(NamedKey::ArrowUp) => {
+                self.camera.pan(Vec2::new(0.0, -80.0));
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.camera.pan(Vec2::new(0.0, 80.0));
             }
             // Cycle color scheme
             Key::Character(ref c) if c == "c" || c == "C" => {
@@ -449,6 +456,56 @@ impl<'window> App<'window> {
             Key::Character(ref c) if c == "e" || c == "E" => {
                 self.pending_export = Some(ExportResolution::UHD4K);
                 log::info!("Export requested (4K)");
+            }
+            // Pan with WASD
+            Key::Character(ref c) if c == "w" || c == "W" => {
+                self.camera.pan(Vec2::new(0.0, -80.0));
+            }
+            Key::Character(ref c) if c == "a" || c == "A" => {
+                self.camera.pan(Vec2::new(-80.0, 0.0));
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.camera.pan(Vec2::new(-80.0, 0.0));
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.camera.pan(Vec2::new(80.0, 0.0));
+            }
+            Key::Character(ref c) if c == "d" || c == "D" => {
+                self.camera.pan(Vec2::new(80.0, 0.0));
+            }
+            // Zoom in/out with Q/Z (centered on screen)
+            Key::Character(ref c) if c == "q" || c == "Q" => {
+                let screen_center = self.camera.screen_size.as_vec2() / 2.0;
+                self.camera.zoom_at(screen_center, 1.5);
+            }
+            Key::Character(ref c) if c == "z" || c == "Z" => {
+                let screen_center = self.camera.screen_size.as_vec2() / 2.0;
+                self.camera.zoom_at(screen_center, 1.0 / 1.5);
+            }
+            // Julia c parameter: J/L for c_real, I/K for c_imag
+            Key::Character(ref c) if c == "j" || c == "J" => {
+                if let FractalType::Julia { ref mut c } = self.current_fractal {
+                    c.x -= 0.01;
+                    log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                }
+            }
+            Key::Character(ref c) if c == "l" || c == "L" => {
+                if let FractalType::Julia { ref mut c } = self.current_fractal {
+                    c.x += 0.01;
+                    log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                }
+            }
+            Key::Character(ref c) if c == "i" || c == "I" => {
+                if let FractalType::Julia { ref mut c } = self.current_fractal {
+                    c.y += 0.01;
+                    log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                }
+            }
+            Key::Character(ref c) if c == "k" || c == "K" => {
+                if let FractalType::Julia { ref mut c } = self.current_fractal {
+                    c.y -= 0.01;
+                    log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                }
             }
             _ => {}
         }
