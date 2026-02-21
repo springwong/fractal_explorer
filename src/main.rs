@@ -9,7 +9,7 @@ use camera::Camera;
 use coloring::ColorScheme;
 use fractals::FractalType;
 use glam::{UVec2, Vec2};
-use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline, ds_split, compute_reference_orbit};
+use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline, ds_split, compute_reference_orbit, compute_reference_orbit_julia};
 use export::ExportResolution;
 use ui::{ControlPanel, PanelAction, UiContext};
 use std::sync::Arc;
@@ -116,12 +116,25 @@ impl<'window> App<'window> {
         let pixel_step_x = (1.0 / (self.camera.zoom * screen_height)) as f32;
         let pixel_step_y = (-1.0 / (self.camera.zoom * screen_height)) as f32;
 
-        // Compute reference orbit for perturbation (Mandelbrot only, when using f64)
+        // Compute reference orbit for perturbation (Mandelbrot & Julia, when using f64)
         let use_f64 = self.camera.zoom >= 5.0e3;
-        let ref_escape_iter = if use_f64 && self.current_fractal.type_id() == 0 {
+        let fractal_id = self.current_fractal.type_id();
+        let ref_escape_iter = if use_f64 && fractal_id == 0 {
+            // Mandelbrot: z_{n+1} = z_n^2 + c, z_0 = 0, c = center
             let (orbit_data, escape_iter) = compute_reference_orbit(
                 self.camera.center.x,
                 self.camera.center.y,
+                self.max_iter,
+            );
+            compute.upload_orbit(&gpu.device, &gpu.queue, &orbit_data);
+            escape_iter
+        } else if use_f64 && fractal_id == 1 {
+            // Julia: z_{n+1} = z_n^2 + c, z_0 = center, c = fixed param
+            let (orbit_data, escape_iter) = compute_reference_orbit_julia(
+                self.camera.center.x,
+                self.camera.center.y,
+                params.c_real as f64,
+                params.c_imag as f64,
                 self.max_iter,
             );
             compute.upload_orbit(&gpu.device, &gpu.queue, &orbit_data);

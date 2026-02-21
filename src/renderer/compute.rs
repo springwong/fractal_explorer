@@ -208,7 +208,7 @@ impl ComputePipeline {
 
     /// Check if the given fractal+precision uses perturbation (needs 3-binding layout)
     fn uses_perturbation(fractal_type: &FractalType, use_f64: bool) -> bool {
-        use_f64 && fractal_type.type_id() == 0 // Only Mandelbrot f64 uses perturbation
+        use_f64 && (fractal_type.type_id() == 0 || fractal_type.type_id() == 1) // Mandelbrot & Julia
     }
 
     /// Get or create a compute pipeline for the given fractal type and precision

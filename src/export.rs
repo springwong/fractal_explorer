@@ -1,5 +1,5 @@
 use crate::fractals::FractalType;
-use crate::renderer::{FractalUniforms, compute_reference_orbit};
+use crate::renderer::{FractalUniforms, compute_reference_orbit, compute_reference_orbit_julia};
 use std::path::Path;
 
 /// Export resolution presets
@@ -106,13 +106,22 @@ pub fn export_png(
 
     // Determine precision mode
     let use_f64 = zoom_f64 >= 5.0e3;
-    let use_perturbation = use_f64 && fractal_type.type_id() == 0;
+    let ftype = fractal_type.type_id();
+    let use_perturbation = use_f64 && (ftype == 0 || ftype == 1);
 
-    // Create orbit buffer for perturbation (Mandelbrot f64 only)
+    // Create orbit buffer for perturbation (Mandelbrot & Julia f64)
     let orbit_buffer = if use_perturbation {
         let center_x = uniforms.center[0] as f64 + uniforms.center_lo_x as f64;
         let center_y = uniforms.center[1] as f64 + uniforms.center_lo_y as f64;
-        let (orbit_data, _escape_iter) = compute_reference_orbit(center_x, center_y, uniforms.max_iter);
+        let orbit_data = if ftype == 0 {
+            compute_reference_orbit(center_x, center_y, uniforms.max_iter).0
+        } else {
+            compute_reference_orbit_julia(
+                center_x, center_y,
+                uniforms.c_real as f64, uniforms.c_imag as f64,
+                uniforms.max_iter,
+            ).0
+        };
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Export Orbit Buffer"),
             size: (orbit_data.len() * 4) as u64,

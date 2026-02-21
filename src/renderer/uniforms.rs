@@ -137,6 +137,50 @@ pub fn compute_reference_orbit(center_x: f64, center_y: f64, max_iter: u32) -> (
     (orbit, escape_iter)
 }
 
+/// Compute the reference orbit for Julia set perturbation theory.
+/// Julia iteration: z_{n+1} = z_n^2 + c, starting from z_0 = center (the view center).
+/// Returns (orbit_data, escape_iter) as flat Vec of [zx, zy] f32 pairs.
+pub fn compute_reference_orbit_julia(
+    z0_x: f64, z0_y: f64,
+    c_real: f64, c_imag: f64,
+    max_iter: u32,
+) -> (Vec<f32>, u32) {
+    let capacity = (max_iter as usize + 1) * 2;
+    let mut orbit = Vec::with_capacity(capacity);
+    let mut zx: f64 = z0_x;
+    let mut zy: f64 = z0_y;
+    let mut escape_iter = max_iter;
+
+    // Store z_0
+    orbit.push(zx as f32);
+    orbit.push(zy as f32);
+
+    for i in 0..max_iter {
+        let new_zx = zx * zx - zy * zy + c_real;
+        let new_zy = 2.0 * zx * zy + c_imag;
+        zx = new_zx;
+        zy = new_zy;
+        orbit.push(zx as f32);
+        orbit.push(zy as f32);
+
+        if zx * zx + zy * zy > 1e10 {
+            escape_iter = i + 1;
+            while orbit.len() < capacity {
+                orbit.push(0.0f32);
+                orbit.push(0.0f32);
+            }
+            break;
+        }
+    }
+
+    while orbit.len() < capacity {
+        orbit.push(0.0f32);
+        orbit.push(0.0f32);
+    }
+
+    (orbit, escape_iter)
+}
+
 // Compile-time assertion for size (must match WGSL layout)
 const _: () = assert!(std::mem::size_of::<FractalUniforms>() == 64);
 const _: () = assert!(std::mem::size_of::<FractalUniforms>() % 16 == 0);
