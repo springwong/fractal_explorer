@@ -1,4 +1,4 @@
-// Fractal uniforms matching Rust FractalUniforms struct (48 bytes)
+// Fractal uniforms matching Rust FractalUniforms struct (64 bytes)
 struct Uniforms {
     center: vec2<f32>,       // offset 0, 8 bytes
     zoom: f32,               // offset 8, 4 bytes
@@ -8,7 +8,13 @@ struct Uniforms {
     color_scheme: u32,       // offset 24, 4 bytes
     c_real: f32,             // offset 28, 4 bytes
     c_imag: f32,             // offset 32, 4 bytes
-    _padding: vec3<u32>,     // offset 36, 12 bytes
+    center_lo_x: f32,        // offset 36, 4 bytes (emulated double)
+    center_lo_y: f32,        // offset 40, 4 bytes (emulated double)
+    zoom_lo: f32,            // offset 44, 4 bytes (emulated double)
+    pixel_step_x: f32,       // offset 48, 4 bytes
+    pixel_step_y: f32,       // offset 52, 4 bytes
+    ref_escape_iter: u32,    // offset 56, 4 bytes
+    _pad: u32,               // offset 60, 4 bytes
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

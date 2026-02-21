@@ -9,7 +9,7 @@ use camera::Camera;
 use coloring::ColorScheme;
 use fractals::FractalType;
 use glam::{UVec2, Vec2};
-use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline};
+use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline, ds_split, compute_reference_orbit};
 use export::ExportResolution;
 use ui::{ControlPanel, PanelAction, UiContext};
 use std::sync::Arc;
@@ -66,7 +66,7 @@ impl<'window> App<'window> {
             current_fractal: FractalType::Mandelbrot,
             current_color: ColorScheme::default(),
             pending_export: None,
-            last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0),
+            last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0),
             last_frame_time: std::time::Instant::now(),
             frame_count: 0,
             fps: 0.0,
@@ -85,6 +85,7 @@ impl<'window> App<'window> {
         let mut panel_action = PanelAction::None;
         let full_output = ui.egui_ctx.run(raw_input, |ctx| {
             // Show control panel
+            let using_f64 = compute.using_f64;
             panel_action = ControlPanel::show(
                 ctx,
                 &mut self.current_fractal,
@@ -93,6 +94,7 @@ impl<'window> App<'window> {
                 self.fps,
                 self.camera.center,
                 self.camera.zoom,
+                using_f64,
             );
         });
 
@@ -104,16 +106,45 @@ impl<'window> App<'window> {
         // Get fractal parameters
         let params = self.current_fractal.params();
 
+        // Split f64 camera values into hi+lo f32 pairs for emulated double precision
+        let (center_x_hi, center_x_lo) = ds_split(self.camera.center.x);
+        let (center_y_hi, center_y_lo) = ds_split(self.camera.center.y);
+        let (zoom_hi, zoom_lo) = ds_split(self.camera.zoom);
+
+        // Compute per-pixel step on CPU in f64 for precision
+        let screen_height = gpu.surface_config.height as f64;
+        let pixel_step_x = (1.0 / (self.camera.zoom * screen_height)) as f32;
+        let pixel_step_y = (-1.0 / (self.camera.zoom * screen_height)) as f32;
+
+        // Compute reference orbit for perturbation (Mandelbrot only, when using f64)
+        let use_f64 = self.camera.zoom >= 5.0e3;
+        let ref_escape_iter = if use_f64 && self.current_fractal.type_id() == 0 {
+            let (orbit_data, escape_iter) = compute_reference_orbit(
+                self.camera.center.x,
+                self.camera.center.y,
+                self.max_iter,
+            );
+            compute.upload_orbit(&gpu.device, &gpu.queue, &orbit_data);
+            escape_iter
+        } else {
+            self.max_iter
+        };
+
         // Update uniforms
         let uniforms = FractalUniforms::new(
-            [self.camera.center.x as f32, self.camera.center.y as f32],
-            self.camera.zoom as f32,
+            [center_x_hi, center_y_hi],
+            zoom_hi,
             self.camera.aspect_ratio(),
             self.max_iter,
             self.current_fractal.type_id(),
             self.current_color.to_id(),
             params.c_real,
             params.c_imag,
+            [center_x_lo, center_y_lo],
+            zoom_lo,
+            pixel_step_x,
+            pixel_step_y,
+            ref_escape_iter,
         );
         compute.update_uniforms(&gpu.queue, &uniforms);
         self.last_uniforms = uniforms;
@@ -143,12 +174,14 @@ impl<'window> App<'window> {
             });
 
         // Dispatch compute shader with current fractal type
+        // Auto-switch to f64 emulated precision at high zoom levels
         compute.dispatch(
             &gpu.device,
             &mut encoder,
             gpu.surface_config.width,
             gpu.surface_config.height,
             &self.current_fractal,
+            self.camera.zoom,
         );
 
         // Render fractal to surface

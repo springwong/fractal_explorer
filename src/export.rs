@@ -1,5 +1,5 @@
 use crate::fractals::FractalType;
-use crate::renderer::FractalUniforms;
+use crate::renderer::{FractalUniforms, compute_reference_orbit};
 use std::path::Path;
 
 /// Export resolution presets
@@ -55,6 +55,11 @@ pub fn export_png(
         output_path
     );
 
+    // Recompute pixel_step for export resolution (height differs from screen)
+    let zoom_f64 = uniforms.zoom as f64 + uniforms.zoom_lo as f64;
+    let export_pixel_step_x = (1.0 / (zoom_f64 * height as f64)) as f32;
+    let export_pixel_step_y = (-1.0 / (zoom_f64 * height as f64)) as f32;
+
     // Create export uniforms with correct aspect ratio for target resolution
     let export_uniforms = FractalUniforms::new(
         uniforms.center,
@@ -65,6 +70,11 @@ pub fn export_png(
         uniforms.color_scheme,
         uniforms.c_real,
         uniforms.c_imag,
+        [uniforms.center_lo_x, uniforms.center_lo_y],
+        uniforms.zoom_lo,
+        export_pixel_step_x,
+        export_pixel_step_y,
+        uniforms.ref_escape_iter,
     );
 
     // Create uniform buffer
@@ -94,58 +104,104 @@ pub fn export_png(
 
     let texture_view = storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Create bind group layout
+    // Determine precision mode
+    let use_f64 = zoom_f64 >= 5.0e3;
+    let use_perturbation = use_f64 && fractal_type.type_id() == 0;
+
+    // Create orbit buffer for perturbation (Mandelbrot f64 only)
+    let orbit_buffer = if use_perturbation {
+        let center_x = uniforms.center[0] as f64 + uniforms.center_lo_x as f64;
+        let center_y = uniforms.center[1] as f64 + uniforms.center_lo_y as f64;
+        let (orbit_data, _escape_iter) = compute_reference_orbit(center_x, center_y, uniforms.max_iter);
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Export Orbit Buffer"),
+            size: (orbit_data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buf, 0, bytemuck::cast_slice(&orbit_data));
+        Some(buf)
+    } else {
+        None
+    };
+
+    // Build bind group layout entries
+    let mut layout_entries = vec![
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        },
+    ];
+    if use_perturbation {
+        layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
+    }
+
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Export Bind Group Layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::StorageTexture {
-                    access: wgpu::StorageTextureAccess::WriteOnly,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                },
-                count: None,
-            },
-        ],
+        entries: &layout_entries,
     });
 
-    // Create bind group
+    // Build bind group entries
+    let mut bg_entries = vec![
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::TextureView(&texture_view),
+        },
+    ];
+    if let Some(ref ob) = orbit_buffer {
+        bg_entries.push(wgpu::BindGroupEntry {
+            binding: 2,
+            resource: ob.as_entire_binding(),
+        });
+    }
+
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Export Bind Group"),
         layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&texture_view),
-            },
-        ],
+        entries: &bg_entries,
     });
 
-    // Create pipeline layout
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Export Pipeline Layout"),
         bind_group_layouts: &[&bind_group_layout],
         push_constant_ranges: &[],
     });
 
-    // Create compute pipeline with the correct shader
-    let shader_source = fractal_type.shader_source();
+    // Select shader
+    let shader_source = if use_f64 {
+        fractal_type.shader_source_f64()
+    } else {
+        fractal_type.shader_source()
+    };
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Export Compute Shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source.into()),

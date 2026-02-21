@@ -9,6 +9,10 @@ impl Fractal for BurningShip {
         include_str!("../shaders/burning_ship.wgsl")
     }
 
+    fn shader_source_f64(&self) -> &'static str {
+        include_str!("../shaders/burning_ship_f64.wgsl")
+    }
+
     fn type_id(&self) -> u32 {
         2
     }

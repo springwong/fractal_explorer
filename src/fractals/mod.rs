@@ -16,6 +16,9 @@ pub trait Fractal: Send + Sync {
     /// Get the WGSL shader source code for this fractal
     fn shader_source(&self) -> &'static str;
 
+    /// Get the WGSL shader source with emulated f64 precision for deep zoom
+    fn shader_source_f64(&self) -> &'static str;
+
     /// Get the fractal type ID for uniform buffer
     fn type_id(&self) -> u32;
 
@@ -108,6 +111,16 @@ impl FractalType {
             FractalType::Julia { .. } => Julia::default().shader_source(),
             FractalType::BurningShip => BurningShip.shader_source(),
             FractalType::Tricorn => Tricorn.shader_source(),
+        }
+    }
+
+    /// Get the emulated f64 shader source for deep zoom
+    pub fn shader_source_f64(&self) -> &'static str {
+        match self {
+            FractalType::Mandelbrot => Mandelbrot.shader_source_f64(),
+            FractalType::Julia { .. } => Julia::default().shader_source_f64(),
+            FractalType::BurningShip => BurningShip.shader_source_f64(),
+            FractalType::Tricorn => Tricorn.shader_source_f64(),
         }
     }
 

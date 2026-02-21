@@ -10,10 +10,13 @@
 /// offset 24: color_scheme (u32) - 4 bytes
 /// offset 28: c_real (f32) - 4 bytes (Julia parameter)
 /// offset 32: c_imag (f32) - 4 bytes (Julia parameter)
-/// offset 36: _padding1 (u32) - 4 bytes (align to 16)
-/// offset 40: _padding2 (u32) - 4 bytes
-/// offset 44: _padding3 (u32) - 4 bytes
-/// offset 48: _padding4 (vec4<u32>) - 16 bytes (vec3 in WGSL takes 16 bytes!)
+/// offset 36: center_lo_x (f32) - 4 bytes (emulated double: low bits of center.x)
+/// offset 40: center_lo_y (f32) - 4 bytes (emulated double: low bits of center.y)
+/// offset 44: zoom_lo (f32) - 4 bytes (emulated double: low bits of zoom)
+/// offset 48: pixel_step_x (f32) - 4 bytes (per-pixel step in x, computed on CPU in f64)
+/// offset 52: pixel_step_y (f32) - 4 bytes (per-pixel step in y, computed on CPU in f64)
+/// offset 56: ref_escape_iter (u32) - 4 bytes (iteration where reference orbit escapes)
+/// offset 60: _pad (u32) - 4 bytes
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FractalUniforms {
@@ -33,11 +36,20 @@ pub struct FractalUniforms {
     pub c_real: f32,
     /// Julia set c parameter (imaginary part)
     pub c_imag: f32,
-    /// Padding to align to 64 bytes (vec3 in WGSL = 16 bytes)
-    pub _padding1: u32,
-    pub _padding2: u32,
-    pub _padding3: u32,
-    pub _padding4: [u32; 4],  // vec3 in WGSL takes 16 bytes due to alignment
+    /// Emulated double: low bits of center.x
+    pub center_lo_x: f32,
+    /// Emulated double: low bits of center.y
+    pub center_lo_y: f32,
+    /// Emulated double: low bits of zoom
+    pub zoom_lo: f32,
+    /// Per-pixel step in x direction (1.0 / (zoom * height)), computed on CPU in f64
+    pub pixel_step_x: f32,
+    /// Per-pixel step in y direction (-1.0 / (zoom * height)), computed on CPU in f64
+    pub pixel_step_y: f32,
+    /// Iteration where reference orbit escapes (or max_iter if it doesn't)
+    pub ref_escape_iter: u32,
+    /// Padding to maintain 64-byte alignment
+    pub _pad: u32,
 }
 
 impl FractalUniforms {
@@ -50,6 +62,11 @@ impl FractalUniforms {
         color_scheme: u32,
         c_real: f32,
         c_imag: f32,
+        center_lo: [f32; 2],
+        zoom_lo: f32,
+        pixel_step_x: f32,
+        pixel_step_y: f32,
+        ref_escape_iter: u32,
     ) -> Self {
         Self {
             center,
@@ -60,12 +77,64 @@ impl FractalUniforms {
             color_scheme,
             c_real,
             c_imag,
-            _padding1: 0,
-            _padding2: 0,
-            _padding3: 0,
-            _padding4: [0; 4],
+            center_lo_x: center_lo[0],
+            center_lo_y: center_lo[1],
+            zoom_lo,
+            pixel_step_x,
+            pixel_step_y,
+            ref_escape_iter,
+            _pad: 0,
         }
     }
+}
+
+/// Split an f64 value into two f32 components (hi + lo) for emulated double precision.
+pub fn ds_split(value: f64) -> (f32, f32) {
+    let hi = value as f32;
+    let lo = (value - hi as f64) as f32;
+    (hi, lo)
+}
+
+/// Compute the reference orbit at center in f64 precision (for perturbation theory).
+/// Returns (orbit_data, escape_iter) where orbit_data is a flat Vec of [zx, zy] f32 pairs,
+/// and escape_iter is when the reference escapes (or max_iter if it stays bounded).
+pub fn compute_reference_orbit(center_x: f64, center_y: f64, max_iter: u32) -> (Vec<f32>, u32) {
+    let capacity = (max_iter as usize + 1) * 2;
+    let mut orbit = Vec::with_capacity(capacity);
+    let mut zx: f64 = 0.0;
+    let mut zy: f64 = 0.0;
+    let mut escape_iter = max_iter;
+
+    // Store z_0 = (0, 0)
+    orbit.push(0.0f32);
+    orbit.push(0.0f32);
+
+    for i in 0..max_iter {
+        let new_zx = zx * zx - zy * zy + center_x;
+        let new_zy = 2.0 * zx * zy + center_y;
+        zx = new_zx;
+        zy = new_zy;
+        orbit.push(zx as f32);
+        orbit.push(zy as f32);
+
+        if zx * zx + zy * zy > 1e10 {
+            escape_iter = i + 1;
+            // Pad remaining entries
+            while orbit.len() < capacity {
+                orbit.push(0.0f32);
+                orbit.push(0.0f32);
+            }
+            break;
+        }
+    }
+
+    // Ensure we have exactly the right number of entries
+    while orbit.len() < capacity {
+        orbit.push(0.0f32);
+        orbit.push(0.0f32);
+    }
+
+    (orbit, escape_iter)
 }
 
 // Compile-time assertion for size (must match WGSL layout)

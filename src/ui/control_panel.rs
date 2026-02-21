@@ -23,6 +23,7 @@ impl ControlPanel {
         fps: f32,
         center: glam::DVec2,
         zoom: f64,
+        using_f64: bool,
     ) -> PanelAction {
         let mut action = PanelAction::None;
 
@@ -90,6 +91,14 @@ impl ControlPanel {
                 ui.heading("Camera");
                 ui.label(format!("Center: ({:.6}, {:.6})", center.x, center.y));
                 ui.label(format!("Zoom: {:.2e}", zoom));
+                ui.horizontal(|ui| {
+                    ui.label("Precision:");
+                    if using_f64 {
+                        ui.colored_label(egui::Color32::from_rgb(255, 200, 50), "f64 (perturbation)");
+                    } else {
+                        ui.colored_label(egui::Color32::GREEN, "f32");
+                    }
+                });
 
                 ui.separator();
 
