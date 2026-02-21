@@ -437,10 +437,10 @@ impl<'window> App<'window> {
             }
             // Pan with arrow keys
             Key::Named(NamedKey::ArrowUp) => {
-                self.camera.pan(Vec2::new(0.0, -80.0));
+                self.camera.pan(Vec2::new(0.0, 80.0));
             }
             Key::Named(NamedKey::ArrowDown) => {
-                self.camera.pan(Vec2::new(0.0, 80.0));
+                self.camera.pan(Vec2::new(0.0, -80.0));
             }
             // Cycle color scheme
             Key::Character(ref c) if c == "c" || c == "C" => {
@@ -459,19 +459,19 @@ impl<'window> App<'window> {
             }
             // Pan with WASD
             Key::Character(ref c) if c == "w" || c == "W" => {
-                self.camera.pan(Vec2::new(0.0, -80.0));
+                self.camera.pan(Vec2::new(0.0, 80.0));
             }
             Key::Character(ref c) if c == "a" || c == "A" => {
-                self.camera.pan(Vec2::new(-80.0, 0.0));
+                self.camera.pan(Vec2::new(80.0, 0.0));
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.camera.pan(Vec2::new(-80.0, 0.0));
+                self.camera.pan(Vec2::new(80.0, 0.0));
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.camera.pan(Vec2::new(80.0, 0.0));
+                self.camera.pan(Vec2::new(-80.0, 0.0));
             }
             Key::Character(ref c) if c == "d" || c == "D" => {
-                self.camera.pan(Vec2::new(80.0, 0.0));
+                self.camera.pan(Vec2::new(-80.0, 0.0));
             }
             // Zoom in/out with Q/Z (centered on screen)
             Key::Character(ref c) if c == "q" || c == "Q" => {
