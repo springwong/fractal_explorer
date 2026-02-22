@@ -4,12 +4,14 @@ mod julia;
 mod burning_ship;
 mod tricorn;
 mod buddhabrot;
+mod nova;
 
 pub use mandelbrot::Mandelbrot;
 pub use julia::Julia;
 pub use burning_ship::BurningShip;
 pub use tricorn::Tricorn;
 pub use buddhabrot::Buddhabrot;
+pub use nova::Nova;
 
 use glam::{DVec2, Vec2};
 
@@ -61,6 +63,7 @@ pub enum FractalType {
     BurningShip,
     Tricorn,
     Buddhabrot,
+    Nova { c: Vec2 },
 }
 
 impl FractalType {
@@ -72,6 +75,7 @@ impl FractalType {
             FractalType::BurningShip => 2,
             FractalType::Tricorn => 3,
             FractalType::Buddhabrot => 4,
+            FractalType::Nova { .. } => 5,
         }
     }
 
@@ -86,6 +90,10 @@ impl FractalType {
             FractalType::BurningShip => FractalParams::default(),
             FractalType::Tricorn => FractalParams::default(),
             FractalType::Buddhabrot => FractalParams::default(),
+            FractalType::Nova { c } => FractalParams {
+                c_real: c.x,
+                c_imag: c.y,
+            },
         }
     }
 
@@ -97,6 +105,7 @@ impl FractalType {
             FractalType::BurningShip => BurningShip.default_center(),
             FractalType::Tricorn => Tricorn.default_center(),
             FractalType::Buddhabrot => Buddhabrot.default_center(),
+            FractalType::Nova { .. } => Nova::default().default_center(),
         }
     }
 
@@ -108,6 +117,7 @@ impl FractalType {
             FractalType::BurningShip => BurningShip.default_zoom(),
             FractalType::Tricorn => Tricorn.default_zoom(),
             FractalType::Buddhabrot => Buddhabrot.default_zoom(),
+            FractalType::Nova { .. } => Nova::default().default_zoom(),
         }
     }
 
@@ -119,6 +129,7 @@ impl FractalType {
             FractalType::BurningShip => BurningShip.shader_source(),
             FractalType::Tricorn => Tricorn.shader_source(),
             FractalType::Buddhabrot => Buddhabrot.shader_source(),
+            FractalType::Nova { .. } => Nova::default().shader_source(),
         }
     }
 
@@ -130,6 +141,7 @@ impl FractalType {
             FractalType::BurningShip => BurningShip.shader_source_f64(),
             FractalType::Tricorn => Tricorn.shader_source_f64(),
             FractalType::Buddhabrot => Buddhabrot.shader_source_f64(),
+            FractalType::Nova { .. } => Nova::default().shader_source_f64(),
         }
     }
 
@@ -141,6 +153,7 @@ impl FractalType {
             FractalType::BurningShip => "Burning Ship",
             FractalType::Tricorn => "Tricorn",
             FractalType::Buddhabrot => "Buddhabrot",
+            FractalType::Nova { .. } => "Nova Fractal",
         }
     }
 

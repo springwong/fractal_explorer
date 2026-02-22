@@ -41,19 +41,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    // Log tonemap to handle high dynamic range
-    let t = log2(f32(count) + 1.0);
+    // Log tonemap normalized by accumulated sample count to prevent saturation
+    let sample_count = max(uniforms._pad2.z, 1u);
+    let t = log2(f32(count) + 1.0) / log2(f32(sample_count) + 1.0);
 
     // Colorize based on scheme
     let color = colorize(t, uniforms.color_scheme);
     textureStore(output_texture, vec2<i32>(id.xy), color);
 }
 
-/// Smooth rainbow colorization
+/// Smooth rainbow colorization (t is normalized ~0-1+)
 fn colorize_smooth(t: f32) -> vec4<f32> {
-    let hue = fract(t * 0.15);
+    let hue = fract(t * 1.5);
     let sat = 0.7;
-    let val = min(1.0, t * 0.1);
+    let val = min(1.0, t);
     let h = hue * 6.0;
     let i = floor(h);
     let f = h - i;
@@ -70,33 +71,33 @@ fn colorize_smooth(t: f32) -> vec4<f32> {
     return vec4<f32>(rgb, 1.0);
 }
 
-/// Fire colorization
+/// Fire colorization (t is normalized ~0-1+)
 fn colorize_fire(t: f32) -> vec4<f32> {
-    let n = min(1.0, t * 0.1);
+    let n = min(1.0, t);
     let r = min(1.0, n * 2.0);
     let g = max(0.0, min(1.0, (n - 0.3) * 2.5));
     let b = max(0.0, min(1.0, (n - 0.7) * 3.3));
     return vec4<f32>(r, g, b, 1.0);
 }
 
-/// Ocean colorization
+/// Ocean colorization (t is normalized ~0-1+)
 fn colorize_ocean(t: f32) -> vec4<f32> {
-    let n = min(1.0, t * 0.1);
+    let n = min(1.0, t);
     let r = max(0.0, min(1.0, (n - 0.6) * 2.5));
     let g = max(0.0, min(1.0, (n - 0.2) * 1.8));
     let b = min(1.0, 0.3 + n * 0.7);
     return vec4<f32>(r, g, b, 1.0);
 }
 
-/// Grayscale colorization
+/// Grayscale colorization (t is normalized ~0-1+)
 fn colorize_grayscale(t: f32) -> vec4<f32> {
-    let intensity = min(1.0, t * 0.1);
+    let intensity = min(1.0, t);
     return vec4<f32>(intensity, intensity, intensity, 1.0);
 }
 
-/// Nebula colorization - tuned for Buddhabrot's density distribution
+/// Nebula colorization - tuned for Buddhabrot's density distribution (t is normalized ~0-1+)
 fn colorize_nebula(t: f32) -> vec4<f32> {
-    let n = min(1.0, t * 0.08);
+    let n = min(1.0, t);
     let r = pow(n, 0.4) * 0.8;
     let g = pow(n, 0.7) * 0.6;
     let b = pow(n, 1.2);

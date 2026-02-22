@@ -38,9 +38,9 @@ fn rand_float(hash: u32) -> f32 {
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    // Use pixel_step_x/y to pass screen dimensions (set by CPU)
-    let width = u32(abs(1.0 / uniforms.pixel_step_x));
-    let height = u32(abs(1.0 / uniforms.pixel_step_y));
+    // Screen dimensions passed directly via _pad2 to avoid float roundtrip precision issues
+    let width = uniforms._pad2.x;
+    let height = uniforms._pad2.y;
 
     if width == 0u || height == 0u {
         return;

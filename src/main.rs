@@ -177,7 +177,7 @@ impl<'window> App<'window> {
         };
 
         // Update uniforms
-        let uniforms = FractalUniforms::new(
+        let mut uniforms = FractalUniforms::new(
             [center_x_hi, center_y_hi],
             zoom_hi,
             self.camera.aspect_ratio(),
@@ -193,6 +193,14 @@ impl<'window> App<'window> {
             ref_escape_iter,
             self.camera.rotation as f32,
         );
+
+        // For Buddhabrot, pass screen dimensions and sample count through _pad2
+        if is_buddhabrot {
+            uniforms._pad2[0] = gpu.surface_config.width;
+            uniforms._pad2[1] = gpu.surface_config.height;
+            uniforms._pad2[2] = compute.accum_sample_count;
+        }
+
         compute.update_uniforms(&gpu.queue, &uniforms);
         self.last_uniforms = uniforms;
 
@@ -486,6 +494,15 @@ impl<'window> App<'window> {
                 self.camera.zoom = self.current_fractal.default_zoom();
                 log::info!("Switched to: {}", self.current_fractal.name());
             }
+            // Switch to Nova
+            Key::Character(ref c) if c == "6" => {
+                self.current_fractal = FractalType::Nova {
+                    c: Vec2::new(1.0, 0.0),
+                };
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
+                log::info!("Switched to: {}", self.current_fractal.name());
+            }
             // Reset view
             Key::Character(ref c) if c == "r" || c == "R" => {
                 self.camera.center = self.current_fractal.default_center();
@@ -604,29 +621,57 @@ impl<'window> App<'window> {
                     self.buddhabrot_dirty = true;
                 }
             }
-            // Julia c parameter: J/L for c_real, I/K for c_imag
+            // Julia/Nova c parameter: J/L for c_real, I/K for c_imag
             Key::Character(ref c) if c == "j" || c == "J" => {
-                if let FractalType::Julia { ref mut c } = self.current_fractal {
-                    c.x -= 0.01;
-                    log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                match self.current_fractal {
+                    FractalType::Julia { ref mut c } => {
+                        c.x -= 0.01;
+                        log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                    }
+                    FractalType::Nova { ref mut c } => {
+                        c.x -= 0.01;
+                        log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
+                    }
+                    _ => {}
                 }
             }
             Key::Character(ref c) if c == "l" || c == "L" => {
-                if let FractalType::Julia { ref mut c } = self.current_fractal {
-                    c.x += 0.01;
-                    log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                match self.current_fractal {
+                    FractalType::Julia { ref mut c } => {
+                        c.x += 0.01;
+                        log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                    }
+                    FractalType::Nova { ref mut c } => {
+                        c.x += 0.01;
+                        log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
+                    }
+                    _ => {}
                 }
             }
             Key::Character(ref c) if c == "i" || c == "I" => {
-                if let FractalType::Julia { ref mut c } = self.current_fractal {
-                    c.y += 0.01;
-                    log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                match self.current_fractal {
+                    FractalType::Julia { ref mut c } => {
+                        c.y += 0.01;
+                        log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                    }
+                    FractalType::Nova { ref mut c } => {
+                        c.y += 0.01;
+                        log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
+                    }
+                    _ => {}
                 }
             }
             Key::Character(ref c) if c == "k" || c == "K" => {
-                if let FractalType::Julia { ref mut c } = self.current_fractal {
-                    c.y -= 0.01;
-                    log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                match self.current_fractal {
+                    FractalType::Julia { ref mut c } => {
+                        c.y -= 0.01;
+                        log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
+                    }
+                    FractalType::Nova { ref mut c } => {
+                        c.y -= 0.01;
+                        log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
+                    }
+                    _ => {}
                 }
             }
             _ => {}

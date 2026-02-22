@@ -59,6 +59,7 @@ impl ControlPanel {
                 ui.radio_value(&mut *fractal, FractalType::BurningShip, "Burning Ship");
                 ui.radio_value(&mut *fractal, FractalType::Tricorn, "Tricorn");
                 ui.radio_value(&mut *fractal, FractalType::Buddhabrot, "Buddhabrot");
+                ui.radio_value(&mut *fractal, FractalType::Nova { c: Vec2::new(1.0, 0.0) }, "Nova Fractal");
 
                 // Julia parameters
                 if let FractalType::Julia { ref mut c } = fractal {
@@ -67,6 +68,14 @@ impl ControlPanel {
                     ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
                     ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
                     ui.label("💡 Tip: Right-click to set c");
+                }
+
+                // Nova parameters
+                if let FractalType::Nova { ref mut c } = fractal {
+                    ui.separator();
+                    ui.label("Nova Parameters:");
+                    ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
+                    ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
                 }
 
                 ui.separator();
@@ -124,13 +133,13 @@ impl ControlPanel {
 
                 // Keyboard shortcuts
                 ui.heading("Keyboard Shortcuts");
-                ui.label("1-5: Switch fractal type");
+                ui.label("1-6: Switch fractal type");
                 ui.label("C: Cycle color scheme");
                 ui.label("R: Reset view");
                 ui.label("Q/E: Rotate left/right");
                 ui.label("T/G: Zoom in/out");
-                ui.label("J/L: Julia c real -/+");
-                ui.label("I/K: Julia c imag +/-");
+                ui.label("J/L: Julia/Nova c real -/+");
+                ui.label("I/K: Julia/Nova c imag +/-");
                 ui.label("P: Save screenshot (1080p)");
                 ui.label("↑/↓: Adjust iterations");
                 ui.label("Esc: Exit");
