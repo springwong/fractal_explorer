@@ -41,9 +41,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    // Log tonemap normalized by accumulated sample count to prevent saturation
-    let sample_count = max(uniforms._pad2.z, 1u);
-    let t = log2(f32(count) + 1.0) / log2(f32(sample_count) + 1.0);
+    // Normalize by sample count to get per-frame hit rate, then log tonemap
+    // This stays stable as frames accumulate, preserving contrast
+    let sample_count = f32(max(uniforms._pad2.z, 1u));
+    let hits_per_frame = f32(count) / sample_count;
+    let t = log2(hits_per_frame + 1.0) * 0.3;
 
     // Colorize based on scheme
     let color = colorize(t, uniforms.color_scheme);

@@ -50,11 +50,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let thread_id = id.x;
     var seed = pcg_hash(thread_id ^ (uniforms.ref_escape_iter * 1664525u + 1013904223u));
 
-    // Generate random c in the range [-2.5, 1.0] x [-1.25, 1.25]
+    // Generate random c in a region covering the Mandelbrot set with margin
+    // Using [-2.5, 1.5] x [-2.0, 2.0] to push the sampling boundary well outside typical views
     seed = pcg_hash(seed);
-    let cx = rand_float(seed) * 3.5 - 2.5;
+    let cx = rand_float(seed) * 4.0 - 2.5;
     seed = pcg_hash(seed);
-    let cy = rand_float(seed) * 2.5 - 1.25;
+    let cy = rand_float(seed) * 4.0 - 2.0;
 
     // First pass: iterate to check if orbit escapes
     var zx: f32 = 0.0;
@@ -70,7 +71,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     // Only process escaping orbits (not in the Mandelbrot set)
-    if iter == max_i {
+    // Require minimum 5 iterations to filter out short orbits that create uniform noise
+    if iter == max_i || iter < 5u {
         return;
     }
 
