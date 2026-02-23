@@ -1,7 +1,9 @@
 /// UI module for egui integration
 mod control_panel;
+mod palette_editor;
 
 pub use control_panel::{ControlPanel, PanelAction};
+pub use palette_editor::PaletteEditor;
 
 use egui_winit::State as EguiState;
 

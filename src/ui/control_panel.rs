@@ -1,4 +1,4 @@
-use crate::coloring::ColorScheme;
+use crate::coloring::{ColorScheme, PresetPalettes};
 use crate::export::ExportResolution;
 use crate::fractals::FractalType;
 use glam::Vec2;
@@ -8,6 +8,8 @@ use glam::Vec2;
 pub enum PanelAction {
     None,
     Export(ExportResolution),
+    OpenPaletteEditor,
+    SelectPreset(usize),
 }
 
 /// Control panel UI state and rendering
@@ -31,7 +33,7 @@ impl ControlPanel {
         egui::SidePanel::left("control_panel")
             .default_width(280.0)
             .show(ctx, |ui| {
-                ui.heading("🔭 Fractal Explorer");
+                ui.heading("Fractal Explorer");
                 ui.separator();
 
                 // FPS display
@@ -67,7 +69,7 @@ impl ControlPanel {
                     ui.label("Julia Parameters:");
                     ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
                     ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
-                    ui.label("💡 Tip: Right-click to set c");
+                    ui.label("Tip: Right-click to set c");
                 }
 
                 // Nova parameters
@@ -90,10 +92,24 @@ impl ControlPanel {
 
                 ui.separator();
 
-                // Color scheme
+                // Color scheme - preset list
                 ui.heading("Color Scheme");
-                for scheme in ColorScheme::all() {
-                    ui.radio_value(&mut *color_scheme, *scheme, scheme.name());
+                let presets = PresetPalettes::all();
+                let current_preset = color_scheme.preset_index();
+                for (i, preset) in presets.iter().enumerate() {
+                    let selected = current_preset == Some(i);
+                    if ui.selectable_label(selected, &preset.name).clicked() && !selected {
+                        action = PanelAction::SelectPreset(i);
+                    }
+                }
+
+                // Show "Custom" if a custom palette is active
+                if let ColorScheme::Custom(ref p) = color_scheme {
+                    let _ = ui.selectable_label(true, format!("* {}", p.name));
+                }
+
+                if ui.button("Edit Palette...").clicked() {
+                    action = PanelAction::OpenPaletteEditor;
                 }
 
                 ui.separator();
@@ -102,7 +118,7 @@ impl ControlPanel {
                 ui.heading("Camera");
                 ui.label(format!("Center: ({:.6}, {:.6})", center.x, center.y));
                 ui.label(format!("Zoom: {:.2e}", zoom));
-                ui.label(format!("Rotation: {:.1}°", rotation.to_degrees()));
+                ui.label(format!("Rotation: {:.1}", rotation.to_degrees()));
                 ui.horizontal(|ui| {
                     ui.label("Precision:");
                     if using_f64 {
@@ -141,7 +157,6 @@ impl ControlPanel {
                 ui.label("J/L: Julia/Nova c real -/+");
                 ui.label("I/K: Julia/Nova c imag +/-");
                 ui.label("P: Save screenshot (1080p)");
-                ui.label("↑/↓: Adjust iterations");
                 ui.label("Esc: Exit");
 
                 ui.separator();

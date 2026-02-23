@@ -11,7 +11,7 @@ use fractals::FractalType;
 use glam::{UVec2, Vec2};
 use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline, ds_split, compute_reference_orbit, compute_reference_orbit_julia};
 use export::ExportResolution;
-use ui::{ControlPanel, PanelAction, UiContext};
+use ui::{ControlPanel, PanelAction, PaletteEditor, UiContext};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -39,6 +39,10 @@ struct App<'window> {
     max_iter: u32,
     current_fractal: FractalType,
     current_color: ColorScheme,
+
+    // Palette state
+    palette_editor: PaletteEditor,
+    palette_dirty: bool,
 
     // Export state
     pending_export: Option<ExportResolution>,
@@ -70,6 +74,8 @@ impl<'window> App<'window> {
             max_iter: 256,
             current_fractal: FractalType::Mandelbrot,
             current_color: ColorScheme::default(),
+            palette_editor: PaletteEditor::new(),
+            palette_dirty: true, // Upload initial palette on first frame
             pending_export: None,
             last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0, 0.0),
             buddhabrot_seed: 0,
@@ -91,6 +97,7 @@ impl<'window> App<'window> {
         // Begin egui frame
         let raw_input = ui.begin_frame(window);
         let mut panel_action = PanelAction::None;
+        let mut editor_palette_result: Option<coloring::Palette> = None;
         let full_output = ui.egui_ctx.run(raw_input, |ctx| {
             // Show control panel
             let using_f64 = compute.using_f64;
@@ -105,11 +112,30 @@ impl<'window> App<'window> {
                 self.camera.rotation,
                 using_f64,
             );
+
+            // Show palette editor if open
+            editor_palette_result = self.palette_editor.show(ctx);
         });
 
-        // Handle panel export action
-        if let PanelAction::Export(resolution) = panel_action {
-            self.pending_export = Some(resolution);
+        // Handle panel actions
+        match panel_action {
+            PanelAction::Export(resolution) => {
+                self.pending_export = Some(resolution);
+            }
+            PanelAction::OpenPaletteEditor => {
+                self.palette_editor.open(&self.current_color);
+            }
+            PanelAction::SelectPreset(idx) => {
+                self.current_color = ColorScheme::Preset(idx);
+                self.palette_dirty = true;
+            }
+            PanelAction::None => {}
+        }
+
+        // Handle palette editor result
+        if let Some(palette) = editor_palette_result {
+            self.current_color = ColorScheme::Custom(palette);
+            self.palette_dirty = true;
         }
 
         // Get fractal parameters
@@ -183,7 +209,7 @@ impl<'window> App<'window> {
             self.camera.aspect_ratio(),
             self.max_iter,
             self.current_fractal.type_id(),
-            self.current_color.to_id(),
+            0, // color_scheme no longer used by shaders (LUT-based)
             params.c_real,
             params.c_imag,
             [center_x_lo, center_y_lo],
@@ -203,6 +229,14 @@ impl<'window> App<'window> {
 
         compute.update_uniforms(&gpu.queue, &uniforms);
         self.last_uniforms = uniforms;
+
+        // Upload palette LUT if dirty
+        if self.palette_dirty {
+            let palette = self.current_color.get_palette();
+            let lut = palette.generate_lut();
+            compute.upload_palette(&gpu.queue, &lut);
+            self.palette_dirty = false;
+        }
 
         // Handle Buddhabrot dirty state (clear accumulation buffer on view change)
         if is_buddhabrot && self.buddhabrot_dirty {
@@ -537,6 +571,7 @@ impl<'window> App<'window> {
             // Cycle color scheme
             Key::Character(ref c) if c == "c" || c == "C" => {
                 self.current_color = self.current_color.next();
+                self.palette_dirty = true;
                 log::info!("Color scheme: {}", self.current_color.name());
             }
             // Pan down with S

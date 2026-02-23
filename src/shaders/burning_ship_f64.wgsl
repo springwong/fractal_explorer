@@ -22,6 +22,7 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<storage, read> palette_lut: array<u32>;
 
 // ── Portable double-single arithmetic ──
 const SPLIT: f32 = 4097.0;
@@ -109,48 +110,14 @@ fn burning_ship_ds(cx_hi: f32, cx_lo: f32, cy_hi: f32, cy_lo: f32) -> f32 {
     return f32(iter) + 1.0 - nu;
 }
 
-fn colorize_smooth(t: f32) -> vec4<f32> {
+fn sample_palette(t: f32) -> vec4<f32> {
     if t == 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-    let hue = fract(t * 0.05); let sat = 0.8; let val = 0.9;
-    let h = hue * 6.0; let i = floor(h); let f = h - i;
-    let p = val * (1.0 - sat); let q = val * (1.0 - sat * f);
-    let t_val = val * (1.0 - sat * (1.0 - f));
-    var rgb: vec3<f32>;
-    if i == 0.0 { rgb = vec3<f32>(val, t_val, p); }
-    else if i == 1.0 { rgb = vec3<f32>(q, val, p); }
-    else if i == 2.0 { rgb = vec3<f32>(p, val, t_val); }
-    else if i == 3.0 { rgb = vec3<f32>(p, q, val); }
-    else if i == 4.0 { rgb = vec3<f32>(t_val, p, val); }
-    else { rgb = vec3<f32>(val, p, q); }
-    return vec4<f32>(rgb, 1.0);
-}
-
-fn colorize_fire(t: f32) -> vec4<f32> {
-    if t == 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-    let n = fract(t * 0.03);
-    return vec4<f32>(min(1.0, n * 2.0), max(0.0, min(1.0, (n - 0.3) * 2.5)), max(0.0, min(1.0, (n - 0.7) * 3.3)), 1.0);
-}
-
-fn colorize_ocean(t: f32) -> vec4<f32> {
-    if t == 0.0 { return vec4<f32>(0.0, 0.0, 0.1, 1.0); }
-    let n = fract(t * 0.04);
-    return vec4<f32>(max(0.0, min(1.0, (n - 0.6) * 2.5)), max(0.0, min(1.0, (n - 0.2) * 1.8)), min(1.0, 0.3 + n * 0.7), 1.0);
-}
-
-fn colorize_grayscale(t: f32) -> vec4<f32> {
-    if t == 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-    let i = fract(t * 0.05);
-    return vec4<f32>(i, i, i, 1.0);
-}
-
-fn colorize(t: f32, scheme: u32) -> vec4<f32> {
-    switch scheme {
-        case 0u: { return colorize_smooth(t); }
-        case 1u: { return colorize_fire(t); }
-        case 2u: { return colorize_ocean(t); }
-        case 3u: { return colorize_grayscale(t); }
-        default: { return colorize_smooth(t); }
-    }
+    let index = u32(fract(t * 0.05) * 255.0);
+    let packed = palette_lut[index];
+    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
+    let g = f32((packed >> 8u) & 0xFFu) / 255.0;
+    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
+    return vec4<f32>(r, g, b, 1.0);
 }
 
 @compute @workgroup_size(16, 16)
@@ -173,6 +140,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let smooth_val = burning_ship_ds(cx_ds.x, cx_ds.y, cy_ds.x, cy_ds.y);
 
-    let color = colorize(smooth_val, uniforms.color_scheme);
+    let color = sample_palette(smooth_val);
     textureStore(output_texture, vec2<i32>(id.xy), color);
 }

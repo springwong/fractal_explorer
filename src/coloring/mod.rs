@@ -1,53 +1,79 @@
 /// Color scheme system for fractal rendering
+pub mod palette;
+pub mod presets;
+
+pub use palette::Palette;
+pub use presets::PresetPalettes;
 
 /// Color scheme selector
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub enum ColorScheme {
-    Smooth = 0,
-    Fire = 1,
-    Ocean = 2,
-    Grayscale = 3,
+    /// A built-in preset palette by index
+    Preset(usize),
+    /// A user-defined custom palette
+    Custom(Palette),
 }
 
 impl ColorScheme {
-    /// Get the numeric ID for uniform buffer
-    pub fn to_id(&self) -> u32 {
-        *self as u32
-    }
-
     /// Get the human-readable name
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
-            ColorScheme::Smooth => "Smooth Rainbow",
-            ColorScheme::Fire => "Fire",
-            ColorScheme::Ocean => "Ocean",
-            ColorScheme::Grayscale => "Grayscale",
+            ColorScheme::Preset(idx) => {
+                let presets = PresetPalettes::all();
+                if *idx < presets.len() {
+                    presets[*idx].name.clone()
+                } else {
+                    "Unknown".to_string()
+                }
+            }
+            ColorScheme::Custom(p) => p.name.clone(),
         }
     }
 
-    /// Cycle to the next color scheme
+    /// Cycle to the next preset color scheme
     pub fn next(&self) -> Self {
+        let count = PresetPalettes::all().len();
         match self {
-            ColorScheme::Smooth => ColorScheme::Fire,
-            ColorScheme::Fire => ColorScheme::Ocean,
-            ColorScheme::Ocean => ColorScheme::Grayscale,
-            ColorScheme::Grayscale => ColorScheme::Smooth,
+            ColorScheme::Preset(idx) => ColorScheme::Preset((*idx + 1) % count),
+            ColorScheme::Custom(_) => ColorScheme::Preset(0),
         }
     }
 
-    /// All available color schemes
-    pub fn all() -> &'static [ColorScheme] {
-        &[
-            ColorScheme::Smooth,
-            ColorScheme::Fire,
-            ColorScheme::Ocean,
-            ColorScheme::Grayscale,
-        ]
+    /// Get the active palette
+    pub fn get_palette(&self) -> Palette {
+        match self {
+            ColorScheme::Preset(idx) => {
+                let presets = PresetPalettes::all();
+                if *idx < presets.len() {
+                    presets[*idx].clone()
+                } else {
+                    presets[0].clone()
+                }
+            }
+            ColorScheme::Custom(p) => p.clone(),
+        }
+    }
+
+    /// Get the preset index, if this is a preset
+    pub fn preset_index(&self) -> Option<usize> {
+        match self {
+            ColorScheme::Preset(idx) => Some(*idx),
+            ColorScheme::Custom(_) => None,
+        }
     }
 }
 
 impl Default for ColorScheme {
     fn default() -> Self {
-        ColorScheme::Smooth
+        ColorScheme::Preset(0)
+    }
+}
+
+impl PartialEq for ColorScheme {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ColorScheme::Preset(a), ColorScheme::Preset(b)) => a == b,
+            _ => false,
+        }
     }
 }

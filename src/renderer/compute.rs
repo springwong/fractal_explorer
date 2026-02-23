@@ -8,14 +8,17 @@ const F64_ZOOM_THRESHOLD: f64 = 5.0e3;
 
 /// Compute pipeline for fractal rendering with dynamic shader support
 pub struct ComputePipeline {
-    // Standard bind group (bindings 0,1: uniform + texture) for f32 and non-Mandelbrot f64
+    // Standard bind group (bindings 0,1,2: uniform + texture + palette) for f32 and non-Mandelbrot f64
     pub bind_group: wgpu::BindGroup,
     pub bind_group_layout: wgpu::BindGroupLayout,
     pub uniform_buffer: wgpu::Buffer,
     pub storage_texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,
 
-    // Perturbation bind group (bindings 0,1,2: uniform + texture + orbit buffer) for Mandelbrot f64
+    // Palette LUT buffer (256 packed RGBA8 entries = 1024 bytes)
+    palette_buffer: wgpu::Buffer,
+
+    // Perturbation bind group (bindings 0,1,2,3: uniform + texture + orbit + palette) for Mandelbrot f64
     orbit_buffer: wgpu::Buffer,
     perturbation_bind_group_layout: wgpu::BindGroupLayout,
     perturbation_bind_group: wgpu::BindGroup,
@@ -57,6 +60,14 @@ impl ComputePipeline {
             mapped_at_creation: false,
         });
 
+        // Create palette LUT buffer (256 RGBA8 entries = 1024 bytes)
+        let palette_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Palette LUT Buffer"),
+            size: 1024,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // Create orbit buffer for perturbation theory
         let orbit_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Reference Orbit Buffer"),
@@ -83,36 +94,9 @@ impl ComputePipeline {
 
         let texture_view = storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Standard bind group layout (2 bindings: uniform + texture)
+        // Standard bind group layout (3 bindings: uniform + texture + palette)
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Compute Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        // Perturbation bind group layout (3 bindings: uniform + texture + orbit)
-        let perturbation_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Perturbation Bind Group Layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -147,6 +131,53 @@ impl ComputePipeline {
             ],
         });
 
+        // Perturbation bind group layout (4 bindings: uniform + texture + orbit + palette)
+        let perturbation_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Perturbation Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
         // Standard bind group
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Compute Bind Group"),
@@ -159,6 +190,10 @@ impl ComputePipeline {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: palette_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -179,6 +214,10 @@ impl ComputePipeline {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: orbit_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: palette_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -253,7 +292,7 @@ impl ComputePipeline {
             push_constant_ranges: &[],
         });
 
-        // Tonemap pass bind group layout: uniform + output_texture + accum_buf (read)
+        // Tonemap pass bind group layout: uniform + output_texture + accum_buf (read) + palette
         let buddhabrot_tonemap_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Buddhabrot Tonemap Bind Group Layout"),
             entries: &[
@@ -287,6 +326,16 @@ impl ComputePipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -306,6 +355,10 @@ impl ComputePipeline {
                     binding: 2,
                     resource: accum_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: palette_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -323,6 +376,7 @@ impl ComputePipeline {
             uniform_buffer,
             storage_texture,
             texture_view,
+            palette_buffer,
             orbit_buffer,
             perturbation_bind_group_layout,
             perturbation_bind_group,
@@ -350,6 +404,11 @@ impl ComputePipeline {
     pub fn upload_orbit(&self, _device: &wgpu::Device, queue: &wgpu::Queue, orbit_data: &[f32]) {
         let bytes = bytemuck::cast_slice(orbit_data);
         queue.write_buffer(&self.orbit_buffer, 0, bytes);
+    }
+
+    /// Upload palette LUT data to GPU
+    pub fn upload_palette(&self, queue: &wgpu::Queue, data: &[u8; 1024]) {
+        queue.write_buffer(&self.palette_buffer, 0, data);
     }
 
     /// Check if the given fractal+precision uses perturbation (needs 3-binding layout)
@@ -573,6 +632,10 @@ impl ComputePipeline {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&self.texture_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.palette_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -592,6 +655,10 @@ impl ComputePipeline {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.orbit_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.palette_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -638,6 +705,10 @@ impl ComputePipeline {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.accum_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.palette_buffer.as_entire_binding(),
                 },
             ],
         });
