@@ -71,11 +71,12 @@ fractal-explorer/
 │   │   ├── mod.rs
 │   │   ├── control_panel.rs   # egui 側邊欄
 │   │   ├── viewport.rs        # 滑鼠互動
+│   │   ├── palette_editor.rs   # 自訂 Palette 編輯器
 │   │   └── color_editor.rs
 │   ├── coloring/
-│   │   ├── mod.rs
-│   │   ├── schemes.rs         # Smooth、Histogram、Orbit Trap
-│   │   └── palette.rs
+│   │   ├── mod.rs             # ColorScheme enum (Preset/Custom)
+│   │   ├── palette.rs         # Palette、ColorStop、LUT 生成
+│   │   └── presets.rs         # 內建配色方案預設
 │   └── shaders/
 │       ├── common.wgsl        # 共用函數（smooth iter、colorize）
 │       ├── fullscreen.wgsl    # Fullscreen quad
@@ -267,24 +268,24 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 ## 實現階段
 
 ### Phase 1：基礎（能跑 Mandelbrot）
-- [ ] wgpu 初始化（instance, adapter, device, queue, surface）
-- [ ] Camera：screen → complex 座標轉換
-- [ ] mandelbrot.wgsl compute shader
-- [ ] Compute pipeline + storage texture
-- [ ] Fullscreen quad render pipeline
-- [ ] winit 事件循環
-- [ ] 滑鼠縮放 + 拖拉平移
+- [x] wgpu 初始化（instance, adapter, device, queue, surface）
+- [x] Camera：screen → complex 座標轉換
+- [x] mandelbrot.wgsl compute shader
+- [x] Compute pipeline + storage texture
+- [x] Fullscreen quad render pipeline
+- [x] winit 事件循環
+- [x] 滑鼠縮放 + 拖拉平移
 
 **完成標準：** 60 FPS @ 1080p 流暢探索 Mandelbrot
 
 ### Phase 2：多 Fractal + UI
-- [ ] 整合 egui
-- [ ] FractalType enum + shader dispatch
-- [ ] Julia Set（互動式 c 參數）
-- [ ] Burning Ship、Tricorn
-- [ ] Smooth Coloring（消除色帶）
-- [ ] 配色方案選擇器
-- [ ] 鍵盤快捷鍵
+- [x] 整合 egui
+- [x] FractalType enum + shader dispatch
+- [x] Julia Set（互動式 c 參數）
+- [x] Burning Ship、Tricorn
+- [x] Smooth Coloring（消除色帶）
+- [x] 配色方案選擇器
+- [x] 鍵盤快捷鍵
 
 **完成標準：** 即時切換 fractal，Julia c 參數可用滑鼠調整
 
@@ -292,8 +293,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 - [x] 高解析度 PNG 導出（4K / 8K）
 - [x] f64 精度 / emulated double（深度縮放）
 - [x] Buddhabrot（accumulation buffer 模式）
-- [ ] Nova Fractal
-- [ ] 自訂 Palette 編輯器
+- [x] Nova Fractal
+- [x] 自訂 Palette 編輯器
 - [ ] Mandelbrot / Julia 聯動模式
 - [ ] 影片錄製
 
@@ -306,6 +307,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 - 視圖變更時自動清除累積緩衝區
 - 支援旋轉、縮放、平移
 - 專用配色方案（Nebula、Fire、Ocean、Grayscale）
+
+**自訂 Palette 編輯器實現細節：**
+- GPU storage buffer LUT：256 個 packed RGBA8 u32（1024 bytes）
+- CPU 線性插值生成 LUT，上傳至 GPU storage buffer
+- 所有 11 個 shader 使用 `sample_palette()` 從 LUT 取樣，取代硬編碼 colorize 函數
+- binding 配置：標準 layout binding 2、perturbation/tonemap layout binding 3
+- 7 個內建預設 + 自訂編輯器（egui Window，支援拖曳色標、色彩選擇器）
+- 調色盤變更時即時更新，無需重新編譯 shader
 
 ### Phase 4：優化
 - [ ] Perturbation Theory（超深度縮放 1e-100+）
