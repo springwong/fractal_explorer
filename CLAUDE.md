@@ -251,8 +251,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 | `C` | 切換配色方案 |
 | `Q` / `E` | 旋轉視圖 (左/右) |
 | `T` / `G` | 縮放 (放大/縮小) |
-| `J` / `L` | Julia c 實部 -/+ |
+| `J` / `L` | Julia c 實部 -/+ (Julia/Nova模式) |
 | `I` / `K` | Julia c 虛部 +/- |
+| `L` | 切換 Mandelbrot/Julia 聯動模式 (非Julia/Nova模式時) |
 
 ### 滑鼠操作
 
@@ -295,7 +296,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 - [x] Buddhabrot（accumulation buffer 模式）
 - [x] Nova Fractal
 - [x] 自訂 Palette 編輯器
-- [ ] Mandelbrot / Julia 聯動模式
+- [x] Mandelbrot / Julia 聯動模式
 - [ ] 影片錄製
 
 **完成標準：** 支援至少 6 種 fractal，可導出高品質輸出

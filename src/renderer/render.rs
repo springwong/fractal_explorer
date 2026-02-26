@@ -6,6 +6,8 @@ pub struct RenderPipeline {
     pub bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Bind group for the Julia texture (linked mode)
+    pub julia_bind_group: wgpu::BindGroup,
 }
 
 impl RenderPipeline {
@@ -13,6 +15,7 @@ impl RenderPipeline {
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
         texture_view: &wgpu::TextureView,
+        julia_texture_view: &wgpu::TextureView,
     ) -> Self {
         // Create sampler
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -119,6 +122,22 @@ impl RenderPipeline {
             cache: None,
         });
 
+        // Julia bind group for linked mode
+        let julia_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Julia Render Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(julia_texture_view),
+                },
+            ],
+        });
+
         log::info!("Render pipeline created");
 
         Self {
@@ -126,6 +145,7 @@ impl RenderPipeline {
             bind_group,
             bind_group_layout,
             sampler,
+            julia_bind_group,
         }
     }
 
@@ -153,6 +173,61 @@ impl RenderPipeline {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
         render_pass.draw(0..3, 0..1); // Fullscreen triangle
+    }
+
+    /// Render split-screen: Mandelbrot (left) + Julia (right)
+    pub fn render_split(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Split-Screen Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        let half_width = width / 2;
+
+        // Left half: Mandelbrot
+        render_pass.set_viewport(0.0, 0.0, half_width as f32, height as f32, 0.0, 1.0);
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
+
+        // Right half: Julia
+        render_pass.set_viewport(half_width as f32, 0.0, (width - half_width) as f32, height as f32, 0.0, 1.0);
+        render_pass.set_bind_group(0, &self.julia_bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+
+    /// Update Julia bind group when texture changes
+    pub fn update_julia_texture(&mut self, device: &wgpu::Device, texture_view: &wgpu::TextureView) {
+        self.julia_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Julia Render Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(texture_view),
+                },
+            ],
+        });
     }
 
     /// Update bind group when texture changes

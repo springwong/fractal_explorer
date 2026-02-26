@@ -10,6 +10,7 @@ pub enum PanelAction {
     Export(ExportResolution),
     OpenPaletteEditor,
     SelectPreset(usize),
+    ToggleLinkedMode,
 }
 
 /// Control panel UI state and rendering
@@ -27,6 +28,8 @@ impl ControlPanel {
         zoom: f64,
         rotation: f64,
         using_f64: bool,
+        linked_mode: bool,
+        linked_julia_c: Vec2,
     ) -> PanelAction {
         let mut action = PanelAction::None;
 
@@ -53,31 +56,45 @@ impl ControlPanel {
 
                 ui.separator();
 
-                // Fractal type selector
-                ui.heading("Fractal Type");
-
-                ui.radio_value(&mut *fractal, FractalType::Mandelbrot, "Mandelbrot Set");
-                ui.radio_value(&mut *fractal, FractalType::Julia { c: Vec2::new(-0.7, 0.27015) }, "Julia Set");
-                ui.radio_value(&mut *fractal, FractalType::BurningShip, "Burning Ship");
-                ui.radio_value(&mut *fractal, FractalType::Tricorn, "Tricorn");
-                ui.radio_value(&mut *fractal, FractalType::Buddhabrot, "Buddhabrot");
-                ui.radio_value(&mut *fractal, FractalType::Nova { c: Vec2::new(1.0, 0.0) }, "Nova Fractal");
-
-                // Julia parameters
-                if let FractalType::Julia { ref mut c } = fractal {
-                    ui.separator();
-                    ui.label("Julia Parameters:");
-                    ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
-                    ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
-                    ui.label("Tip: Right-click to set c");
+                // Linked mode toggle
+                ui.heading("Linked View");
+                if ui.checkbox(&mut { linked_mode }, "Mandelbrot / Julia Split").changed() {
+                    action = PanelAction::ToggleLinkedMode;
                 }
 
-                // Nova parameters
-                if let FractalType::Nova { ref mut c } = fractal {
+                if linked_mode {
+                    ui.label(format!("Julia c: ({:.4}, {:.4})", linked_julia_c.x, linked_julia_c.y));
+                    ui.small("Hover Mandelbrot to update Julia c");
                     ui.separator();
-                    ui.label("Nova Parameters:");
-                    ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
-                    ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
+                }
+
+                // Fractal type selector (disabled in linked mode)
+                if !linked_mode {
+                    ui.heading("Fractal Type");
+
+                    ui.radio_value(&mut *fractal, FractalType::Mandelbrot, "Mandelbrot Set");
+                    ui.radio_value(&mut *fractal, FractalType::Julia { c: Vec2::new(-0.7, 0.27015) }, "Julia Set");
+                    ui.radio_value(&mut *fractal, FractalType::BurningShip, "Burning Ship");
+                    ui.radio_value(&mut *fractal, FractalType::Tricorn, "Tricorn");
+                    ui.radio_value(&mut *fractal, FractalType::Buddhabrot, "Buddhabrot");
+                    ui.radio_value(&mut *fractal, FractalType::Nova { c: Vec2::new(1.0, 0.0) }, "Nova Fractal");
+
+                    // Julia parameters
+                    if let FractalType::Julia { ref mut c } = fractal {
+                        ui.separator();
+                        ui.label("Julia Parameters:");
+                        ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
+                        ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
+                        ui.label("Tip: Right-click to set c");
+                    }
+
+                    // Nova parameters
+                    if let FractalType::Nova { ref mut c } = fractal {
+                        ui.separator();
+                        ui.label("Nova Parameters:");
+                        ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
+                        ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
+                    }
                 }
 
                 ui.separator();
@@ -157,6 +174,7 @@ impl ControlPanel {
                 ui.label("J/L: Julia/Nova c real -/+");
                 ui.label("I/K: Julia/Nova c imag +/-");
                 ui.label("P: Save screenshot (1080p)");
+                ui.label("L: Toggle linked view");
                 ui.label("Esc: Exit");
 
                 ui.separator();

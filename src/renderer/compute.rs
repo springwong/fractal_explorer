@@ -45,6 +45,13 @@ pub struct ComputePipeline {
     current_fractal_type: u32,
     /// Whether the current frame is using emulated f64 precision
     pub using_f64: bool,
+
+    // Linked mode (Mandelbrot/Julia split view) resources
+    pub julia_storage_texture: wgpu::Texture,
+    pub julia_texture_view: wgpu::TextureView,
+    julia_uniform_buffer: wgpu::Buffer,
+    julia_bind_group: wgpu::BindGroup,
+    julia_perturbation_bind_group: wgpu::BindGroup,
 }
 
 /// Initial orbit buffer size (max_iter+1 entries * 2 floats * 4 bytes)
@@ -368,6 +375,47 @@ impl ComputePipeline {
             push_constant_ranges: &[],
         });
 
+        // --- Linked mode (Julia side) resources ---
+        let julia_storage_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Julia Compute Output Texture"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let julia_texture_view = julia_storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let julia_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Julia Uniforms Buffer"),
+            size: std::mem::size_of::<FractalUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let julia_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Julia Compute Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: julia_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&julia_texture_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: palette_buffer.as_entire_binding() },
+            ],
+        });
+
+        let julia_perturbation_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Julia Perturbation Bind Group"),
+            layout: &perturbation_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: julia_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&julia_texture_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: orbit_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: palette_buffer.as_entire_binding() },
+            ],
+        });
+
         log::info!("Compute pipeline created: {}x{}", width, height);
 
         Self {
@@ -397,6 +445,11 @@ impl ComputePipeline {
             pipeline_layout,
             current_fractal_type: 0,
             using_f64: false,
+            julia_storage_texture,
+            julia_texture_view,
+            julia_uniform_buffer,
+            julia_bind_group,
+            julia_perturbation_bind_group,
         }
     }
 
@@ -464,6 +517,42 @@ impl ComputePipeline {
     /// Update uniform buffer
     pub fn update_uniforms(&self, queue: &wgpu::Queue, uniforms: &FractalUniforms) {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(uniforms));
+    }
+
+    /// Update Julia side uniform buffer (for linked mode)
+    pub fn update_julia_uniforms(&self, queue: &wgpu::Queue, uniforms: &FractalUniforms) {
+        queue.write_buffer(&self.julia_uniform_buffer, 0, bytemuck::bytes_of(uniforms));
+    }
+
+    /// Dispatch compute shader for the Julia side in linked mode
+    pub fn dispatch_julia(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        width: u32,
+        height: u32,
+        zoom: f64,
+    ) {
+        let julia_type = FractalType::Julia { c: glam::Vec2::ZERO }; // type_id = 1
+        let use_f64 = zoom >= F64_ZOOM_THRESHOLD;
+        let pipeline = self.get_or_create_pipeline(device, &julia_type, use_f64);
+
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Julia Linked Compute Pass"),
+            timestamp_writes: None,
+        });
+
+        compute_pass.set_pipeline(pipeline);
+
+        if Self::uses_perturbation(&julia_type, use_f64) {
+            compute_pass.set_bind_group(0, &self.julia_perturbation_bind_group, &[]);
+        } else {
+            compute_pass.set_bind_group(0, &self.julia_bind_group, &[]);
+        }
+
+        let workgroup_count_x = (width + 15) / 16;
+        let workgroup_count_y = (height + 15) / 16;
+        compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
     }
 
     /// Dispatch compute shader with dynamic fractal type and automatic precision switching
@@ -710,6 +799,40 @@ impl ComputePipeline {
                     binding: 3,
                     resource: self.palette_buffer.as_entire_binding(),
                 },
+            ],
+        });
+
+        // Recreate linked-mode Julia resources
+        self.julia_storage_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Julia Compute Output Texture"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.julia_texture_view = self.julia_storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.julia_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Julia Compute Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.julia_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.julia_texture_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.palette_buffer.as_entire_binding() },
+            ],
+        });
+
+        self.julia_perturbation_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Julia Perturbation Bind Group"),
+            layout: &self.perturbation_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.julia_uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.julia_texture_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.orbit_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.palette_buffer.as_entire_binding() },
             ],
         });
 

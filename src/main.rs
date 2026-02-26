@@ -21,6 +21,14 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+/// Which viewport the mouse is over in linked mode
+#[derive(Clone, Copy, PartialEq)]
+enum ActiveViewport {
+    Left,
+    Right,
+    None,
+}
+
 /// Main application state
 struct App<'window> {
     window: Option<Arc<Window>>,
@@ -57,6 +65,14 @@ struct App<'window> {
     last_frame_time: std::time::Instant,
     frame_count: u32,
     fps: f32,
+
+    // Linked mode state
+    linked_mode: bool,
+    julia_camera: Camera,
+    linked_julia_c: Vec2,
+    saved_fractal: Option<FractalType>,
+    active_viewport: ActiveViewport,
+    pending_toggle_linked: bool,
 }
 
 impl<'window> App<'window> {
@@ -84,10 +100,52 @@ impl<'window> App<'window> {
             last_frame_time: std::time::Instant::now(),
             frame_count: 0,
             fps: 0.0,
+            linked_mode: false,
+            julia_camera: Camera::new(UVec2::new(1920, 1080)),
+            linked_julia_c: Vec2::new(-0.7, 0.27015),
+            saved_fractal: None,
+            active_viewport: ActiveViewport::None,
+            pending_toggle_linked: false,
+        }
+    }
+
+    fn toggle_linked_mode(&mut self) {
+        self.linked_mode = !self.linked_mode;
+
+        if self.linked_mode {
+            // Entering linked mode: save current state, switch to Mandelbrot
+            self.saved_fractal = Some(self.current_fractal.clone());
+            self.current_fractal = FractalType::Mandelbrot;
+            self.camera.center = FractalType::Mandelbrot.default_center();
+            self.camera.zoom = FractalType::Mandelbrot.default_zoom();
+            self.camera.rotation = 0.0;
+
+            // Initialize Julia camera
+            let julia_default = FractalType::Julia { c: Vec2::ZERO };
+            self.julia_camera.center = julia_default.default_center();
+            self.julia_camera.zoom = julia_default.default_zoom();
+            self.julia_camera.rotation = 0.0;
+
+            log::info!("Linked mode enabled: Mandelbrot (left) + Julia (right)");
+        } else {
+            // Exiting linked mode: restore previous fractal
+            if let Some(saved) = self.saved_fractal.take() {
+                self.current_fractal = saved;
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
+                self.camera.rotation = 0.0;
+            }
+            log::info!("Linked mode disabled");
         }
     }
 
     fn render_frame(&mut self) {
+        // Handle deferred linked mode toggle before borrowing fields
+        if self.pending_toggle_linked {
+            self.pending_toggle_linked = false;
+            self.toggle_linked_mode();
+        }
+
         let Some(ref window) = self.window else { return };
         let Some(ref gpu) = self.gpu else { return };
         let Some(ref mut compute) = self.compute else { return };
@@ -111,6 +169,8 @@ impl<'window> App<'window> {
                 self.camera.zoom,
                 self.camera.rotation,
                 using_f64,
+                self.linked_mode,
+                self.linked_julia_c,
             );
 
             // Show palette editor if open
@@ -128,6 +188,9 @@ impl<'window> App<'window> {
             PanelAction::SelectPreset(idx) => {
                 self.current_color = ColorScheme::Preset(idx);
                 self.palette_dirty = true;
+            }
+            PanelAction::ToggleLinkedMode => {
+                self.pending_toggle_linked = true;
             }
             PanelAction::None => {}
         }
@@ -271,7 +334,7 @@ impl<'window> App<'window> {
 
         // Dispatch compute shader with current fractal type
         // Buddhabrot uses a separate two-pass accumulation pipeline
-        if is_buddhabrot {
+        if is_buddhabrot && !self.linked_mode {
             compute.dispatch_buddhabrot(
                 &gpu.device,
                 &mut encoder,
@@ -292,8 +355,53 @@ impl<'window> App<'window> {
             );
         }
 
+        // In linked mode, also dispatch Julia compute
+        if self.linked_mode {
+            // Build Julia uniforms from julia_camera
+            let (jc_x_hi, jc_x_lo) = ds_split(self.julia_camera.center.x);
+            let (jc_y_hi, jc_y_lo) = ds_split(self.julia_camera.center.y);
+            let (jz_hi, jz_lo) = ds_split(self.julia_camera.zoom);
+            let j_screen_height = gpu.surface_config.height as f64;
+            let j_pixel_step_x = (1.0 / (self.julia_camera.zoom * j_screen_height)) as f32;
+            let j_pixel_step_y = (-1.0 / (self.julia_camera.zoom * j_screen_height)) as f32;
+
+            let julia_uniforms = FractalUniforms::new(
+                [jc_x_hi, jc_y_hi],
+                jz_hi,
+                self.julia_camera.aspect_ratio(),
+                self.max_iter,
+                1, // Julia type_id
+                0,
+                self.linked_julia_c.x,
+                self.linked_julia_c.y,
+                [jc_x_lo, jc_y_lo],
+                jz_lo,
+                j_pixel_step_x,
+                j_pixel_step_y,
+                self.max_iter, // ref_escape_iter
+                self.julia_camera.rotation as f32,
+            );
+            compute.update_julia_uniforms(&gpu.queue, &julia_uniforms);
+            compute.dispatch_julia(
+                &gpu.device,
+                &mut encoder,
+                gpu.surface_config.width,
+                gpu.surface_config.height,
+                self.julia_camera.zoom,
+            );
+        }
+
         // Render fractal to surface
-        render.render(&mut encoder, &surface_view);
+        if self.linked_mode {
+            render.render_split(
+                &mut encoder,
+                &surface_view,
+                gpu.surface_config.width,
+                gpu.surface_config.height,
+            );
+        } else {
+            render.render(&mut encoder, &surface_view);
+        }
 
         // Prepare egui for rendering
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -394,8 +502,10 @@ impl<'window> App<'window> {
             return;
         }
 
-        // Update camera
+        // Update cameras
         self.camera
+            .resize(UVec2::new(new_size.width, new_size.height));
+        self.julia_camera
             .resize(UVec2::new(new_size.width, new_size.height));
 
         // Resize GPU surface
@@ -406,14 +516,42 @@ impl<'window> App<'window> {
             if let Some(ref mut compute) = self.compute {
                 compute.resize(&gpu.device, new_size.width, new_size.height);
 
-                // Update render pipeline bind group
+                // Update render pipeline bind groups
                 if let Some(ref mut render) = self.render {
                     render.update_texture(&gpu.device, &compute.texture_view);
+                    render.update_julia_texture(&gpu.device, &compute.julia_texture_view);
                 }
             }
         }
 
         log::info!("Window resized to {}x{}", new_size.width, new_size.height);
+    }
+
+    /// Determine which viewport the mouse is in (for linked mode)
+    fn get_active_viewport(&self) -> ActiveViewport {
+        if !self.linked_mode {
+            return ActiveViewport::Left; // Single view, treat as left
+        }
+        let Some(ref gpu) = self.gpu else { return ActiveViewport::None };
+        let half_width = gpu.surface_config.width as f32 / 2.0;
+        if self.mouse_pos.x < half_width {
+            ActiveViewport::Left
+        } else {
+            ActiveViewport::Right
+        }
+    }
+
+    /// Get the camera for the active viewport in linked mode, converting mouse to half-screen coords
+    fn linked_screen_pos(&self) -> Vec2 {
+        let Some(ref gpu) = self.gpu else { return self.mouse_pos };
+        let half_width = gpu.surface_config.width as f32 / 2.0;
+        if self.mouse_pos.x < half_width {
+            // Left side: x range [0, half_width) maps to screen_to_complex with half-width screen
+            self.mouse_pos
+        } else {
+            // Right side: x range [half_width, width) maps to [0, half_width)
+            Vec2::new(self.mouse_pos.x - half_width, self.mouse_pos.y)
+        }
     }
 
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState) {
@@ -422,8 +560,10 @@ impl<'window> App<'window> {
                 self.mouse_pressed = state == ElementState::Pressed;
                 if self.mouse_pressed {
                     self.last_mouse_pos = Some(self.mouse_pos);
+                    self.active_viewport = self.get_active_viewport();
                 } else {
                     self.last_mouse_pos = None;
+                    self.active_viewport = ActiveViewport::None;
                 }
             }
             MouseButton::Right if state == ElementState::Pressed => {
@@ -445,15 +585,38 @@ impl<'window> App<'window> {
     fn handle_cursor_moved(&mut self, position: Vec2) {
         self.mouse_pos = position;
 
-        // Pan camera if mouse is pressed
-        if self.mouse_pressed {
-            if let Some(last_pos) = self.last_mouse_pos {
-                let delta = position - last_pos;
-                self.camera.pan(delta);
-                self.last_mouse_pos = Some(position);
-                // Mark Buddhabrot dirty on camera change
-                if self.current_fractal.is_buddhabrot() {
-                    self.buddhabrot_dirty = true;
+        if self.linked_mode {
+            // In linked mode, update julia_c when hovering over the left (Mandelbrot) side
+            let viewport = self.get_active_viewport();
+            if viewport == ActiveViewport::Left && !self.mouse_pressed {
+                // Map mouse position to complex coordinates on the Mandelbrot side
+                let complex_pos = self.camera.screen_to_complex(self.mouse_pos);
+                self.linked_julia_c = Vec2::new(complex_pos.x as f32, complex_pos.y as f32);
+            }
+
+            // Pan the appropriate camera when dragging
+            if self.mouse_pressed {
+                if let Some(last_pos) = self.last_mouse_pos {
+                    let delta = position - last_pos;
+                    match self.active_viewport {
+                        ActiveViewport::Left => self.camera.pan(delta),
+                        ActiveViewport::Right => self.julia_camera.pan(delta),
+                        ActiveViewport::None => {}
+                    }
+                    self.last_mouse_pos = Some(position);
+                }
+            }
+        } else {
+            // Normal mode: pan camera if mouse is pressed
+            if self.mouse_pressed {
+                if let Some(last_pos) = self.last_mouse_pos {
+                    let delta = position - last_pos;
+                    self.camera.pan(delta);
+                    self.last_mouse_pos = Some(position);
+                    // Mark Buddhabrot dirty on camera change
+                    if self.current_fractal.is_buddhabrot() {
+                        self.buddhabrot_dirty = true;
+                    }
                 }
             }
         }
@@ -478,10 +641,24 @@ impl<'window> App<'window> {
             }
         };
 
-        self.camera.zoom_at(self.mouse_pos, zoom_factor);
-        // Mark Buddhabrot dirty on camera change
-        if self.current_fractal.is_buddhabrot() {
-            self.buddhabrot_dirty = true;
+        if self.linked_mode {
+            let viewport = self.get_active_viewport();
+            match viewport {
+                ActiveViewport::Left => {
+                    self.camera.zoom_at(self.mouse_pos, zoom_factor);
+                }
+                ActiveViewport::Right => {
+                    let adjusted_pos = self.linked_screen_pos();
+                    self.julia_camera.zoom_at(adjusted_pos, zoom_factor);
+                }
+                ActiveViewport::None => {}
+            }
+        } else {
+            self.camera.zoom_at(self.mouse_pos, zoom_factor);
+            // Mark Buddhabrot dirty on camera change
+            if self.current_fractal.is_buddhabrot() {
+                self.buddhabrot_dirty = true;
+            }
         }
     }
 
@@ -671,16 +848,19 @@ impl<'window> App<'window> {
                 }
             }
             Key::Character(ref c) if c == "l" || c == "L" => {
+                // In Julia/Nova mode, adjust c parameter; otherwise toggle linked mode
                 match self.current_fractal {
-                    FractalType::Julia { ref mut c } => {
+                    FractalType::Julia { ref mut c } if !self.linked_mode => {
                         c.x += 0.01;
                         log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
                     }
-                    FractalType::Nova { ref mut c } => {
+                    FractalType::Nova { ref mut c } if !self.linked_mode => {
                         c.x += 0.01;
                         log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
                     }
-                    _ => {}
+                    _ => {
+                        self.toggle_linked_mode();
+                    }
                 }
             }
             Key::Character(ref c) if c == "i" || c == "I" => {
@@ -738,7 +918,7 @@ impl ApplicationHandler for App<'_> {
         let compute = ComputePipeline::new(&gpu.device, size.width, size.height);
 
         // Create render pipeline
-        let render = RenderPipeline::new(&gpu.device, gpu.surface_config.format, &compute.texture_view);
+        let render = RenderPipeline::new(&gpu.device, gpu.surface_config.format, &compute.texture_view, &compute.julia_texture_view);
 
         // Initialize egui
         let ui = UiContext::new(&gpu.device, gpu.surface_config.format, &window);
