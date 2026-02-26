@@ -297,7 +297,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 - [x] Nova Fractal
 - [x] 自訂 Palette 編輯器
 - [x] Mandelbrot / Julia 聯動模式
-- [ ] 影片錄製
+- [x] 影片錄製
 
 **完成標準：** 支援至少 6 種 fractal，可導出高品質輸出
 

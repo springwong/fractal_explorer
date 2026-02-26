@@ -1,6 +1,8 @@
 use crate::fractals::FractalType;
-use crate::renderer::{FractalUniforms, compute_reference_orbit, compute_reference_orbit_julia};
+use crate::renderer::{FractalUniforms, compute_reference_orbit, compute_reference_orbit_julia, ds_split};
+use std::io::Write;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 /// Export resolution presets
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -318,6 +320,442 @@ pub fn export_png(
 
     log::info!("Exported PNG: {:?} ({}x{})", output_path, width, height);
     Ok(())
+}
+
+/// Video recording settings
+#[derive(Clone, Debug)]
+pub struct VideoSettings {
+    pub resolution: ExportResolution,
+    pub fps: u32,
+    pub duration_secs: f64,
+    pub target_zoom: f64,
+}
+
+impl Default for VideoSettings {
+    fn default() -> Self {
+        Self {
+            resolution: ExportResolution::HD1080p,
+            fps: 30,
+            duration_secs: 5.0,
+            target_zoom: 1e6,
+        }
+    }
+}
+
+/// Check if ffmpeg is available on the system
+fn check_ffmpeg() -> Result<(), String> {
+    Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| "ffmpeg not found. Please install ffmpeg to record videos.".to_string())?;
+    Ok(())
+}
+
+/// Record a zoom animation video by rendering frames offline and piping to ffmpeg
+pub fn record_video(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    fractal_type: &FractalType,
+    base_uniforms: &FractalUniforms,
+    settings: &VideoSettings,
+    center: glam::DVec2,
+    start_zoom: f64,
+    palette_lut: &[u8; 1024],
+) -> Result<String, String> {
+    check_ffmpeg()?;
+
+    let (width, height) = settings.resolution.dimensions();
+    let total_frames = (settings.fps as f64 * settings.duration_secs) as u32;
+    if total_frames == 0 {
+        return Err("Duration too short for any frames".to_string());
+    }
+
+    let output_filename = generate_video_filename(fractal_type.name(), &settings.resolution);
+    let output_dir = Path::new("export");
+    std::fs::create_dir_all(output_dir).map_err(|e| format!("Failed to create export dir: {}", e))?;
+    let output_path = output_dir.join(&output_filename);
+
+    log::info!(
+        "Recording video: {}x{} @ {} fps, {} frames, zoom {:.2e} -> {:.2e}",
+        width, height, settings.fps, total_frames, start_zoom, settings.target_zoom
+    );
+
+    // --- Create GPU resources (reused across all frames) ---
+    let aspect_ratio = width as f32 / height as f32;
+
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Video Uniform Buffer"),
+        size: std::mem::size_of::<FractalUniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let palette_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Video Palette Buffer"),
+        size: 1024,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&palette_buffer, 0, palette_lut);
+
+    let storage_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Video Storage Texture"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let texture_view = storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let bytes_per_pixel = 4u32;
+    let unpadded_bytes_per_row = width * bytes_per_pixel;
+    let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
+    let buffer_size = (padded_bytes_per_row * height) as u64;
+
+    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Video Output Buffer"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    // Determine precision and create orbit buffer if needed
+    let ftype = fractal_type.type_id();
+    let max_zoom = start_zoom.max(settings.target_zoom);
+    let ever_needs_perturbation = max_zoom >= 5.0e3 && (ftype == 0 || ftype == 1);
+
+    let orbit_buffer = if ever_needs_perturbation {
+        Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Video Orbit Buffer"),
+            size: ((base_uniforms.max_iter as usize + 1) * 2 * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }))
+    } else {
+        None
+    };
+
+    // We need two pipelines: standard (3 bindings) and perturbation (4 bindings)
+    // Standard: uniform + texture + palette
+    let standard_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Video Standard BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+        ],
+    });
+
+    let standard_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Video Standard BG"),
+        layout: &standard_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&texture_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: palette_buffer.as_entire_binding() },
+        ],
+    });
+
+    let standard_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Video Standard PL"),
+        bind_group_layouts: &[&standard_layout],
+        push_constant_ranges: &[],
+    });
+
+    // Perturbation layout (4 bindings: uniform + texture + orbit + palette)
+    let (perturbation_bind_group, perturbation_pipeline_layout) = if let Some(ref ob) = orbit_buffer {
+        let perturbation_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Video Perturbation BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
+        });
+
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Video Perturbation BG"),
+            layout: &perturbation_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&texture_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: ob.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: palette_buffer.as_entire_binding() },
+            ],
+        });
+
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Video Perturbation PL"),
+            bind_group_layouts: &[&perturbation_layout],
+            push_constant_ranges: &[],
+        });
+
+        (Some(bg), Some(pl))
+    } else {
+        (None, None)
+    };
+
+    // Create compute pipelines (standard f32, f64, and perturbation as needed)
+    let shader_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Video Shader f32"),
+        source: wgpu::ShaderSource::Wgsl(fractal_type.shader_source().into()),
+    });
+    let pipeline_f32 = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Video Pipeline f32"),
+        layout: Some(&standard_pipeline_layout),
+        module: &shader_f32,
+        entry_point: "main",
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    // f64 pipeline (perturbation for Mandelbrot/Julia, standard layout for others)
+    let shader_f64 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Video Shader f64"),
+        source: wgpu::ShaderSource::Wgsl(fractal_type.shader_source_f64().into()),
+    });
+    let pipeline_f64 = if ever_needs_perturbation {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Video Pipeline f64 perturbation"),
+            layout: Some(perturbation_pipeline_layout.as_ref().unwrap()),
+            module: &shader_f64,
+            entry_point: "main",
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    } else {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Video Pipeline f64"),
+            layout: Some(&standard_pipeline_layout),
+            module: &shader_f64,
+            entry_point: "main",
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    };
+
+    // Spawn ffmpeg
+    let mut ffmpeg = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgba",
+            "-s", &format!("{}x{}", width, height),
+            "-r", &settings.fps.to_string(),
+            "-i", "-",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "medium",
+            "-crf", "18",
+            output_path.to_str().unwrap_or("export/output.mp4"),
+        ])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
+
+    let mut ffmpeg_stdin = ffmpeg.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
+
+    // Zoom interpolation parameters
+    let zoom_ratio = settings.target_zoom / start_zoom;
+    let params = fractal_type.params();
+    let workgroup_count_x = (width + 15) / 16;
+    let workgroup_count_y = (height + 15) / 16;
+
+    // Render each frame
+    for frame in 0..total_frames {
+        let t = if total_frames > 1 {
+            frame as f64 / (total_frames - 1) as f64
+        } else {
+            0.0
+        };
+        let zoom = start_zoom * zoom_ratio.powf(t);
+        let use_f64 = zoom >= 5.0e3;
+        let use_perturbation = use_f64 && (ftype == 0 || ftype == 1);
+
+        // Compute hi/lo splits
+        let (center_x_hi, center_x_lo) = ds_split(center.x);
+        let (center_y_hi, center_y_lo) = ds_split(center.y);
+        let (zoom_hi, zoom_lo) = ds_split(zoom);
+        let pixel_step_x = (1.0 / (zoom * height as f64)) as f32;
+        let pixel_step_y = (-1.0 / (zoom * height as f64)) as f32;
+
+        // Compute reference orbit if needed
+        let ref_escape_iter = if use_perturbation {
+            let (orbit_data, escape_iter) = if ftype == 0 {
+                compute_reference_orbit(center.x, center.y, base_uniforms.max_iter)
+            } else {
+                compute_reference_orbit_julia(
+                    center.x, center.y,
+                    params.c_real as f64, params.c_imag as f64,
+                    base_uniforms.max_iter,
+                )
+            };
+            if let Some(ref ob) = orbit_buffer {
+                queue.write_buffer(ob, 0, bytemuck::cast_slice(&orbit_data));
+            }
+            escape_iter
+        } else {
+            base_uniforms.max_iter
+        };
+
+        // Build uniforms for this frame
+        let frame_uniforms = FractalUniforms::new(
+            [center_x_hi, center_y_hi],
+            zoom_hi,
+            aspect_ratio,
+            base_uniforms.max_iter,
+            ftype,
+            0,
+            params.c_real,
+            params.c_imag,
+            [center_x_lo, center_y_lo],
+            zoom_lo,
+            pixel_step_x,
+            pixel_step_y,
+            ref_escape_iter,
+            base_uniforms.rotation,
+        );
+        queue.write_buffer(&uniform_buffer, 0, bytemuck::bytes_of(&frame_uniforms));
+
+        // Dispatch compute shader
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Video Frame Encoder"),
+        });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Video Compute Pass"),
+                timestamp_writes: None,
+            });
+
+            if use_perturbation {
+                pass.set_pipeline(&pipeline_f64);
+                pass.set_bind_group(0, perturbation_bind_group.as_ref().unwrap(), &[]);
+            } else if use_f64 {
+                pass.set_pipeline(&pipeline_f64);
+                pass.set_bind_group(0, &standard_bind_group, &[]);
+            } else {
+                pass.set_pipeline(&pipeline_f32);
+                pass.set_bind_group(0, &standard_bind_group, &[]);
+            }
+
+            pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
+        }
+
+        // Copy texture to output buffer
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &storage_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &output_buffer,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+
+        queue.submit(std::iter::once(encoder.finish()));
+
+        // Read back pixels
+        let buffer_slice = output_buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device.poll(wgpu::Maintain::Wait);
+        receiver
+            .recv()
+            .map_err(|e| format!("Frame {}: failed to receive map result: {}", frame, e))?
+            .map_err(|e| format!("Frame {}: failed to map buffer: {:?}", frame, e))?;
+
+        // Extract unpadded pixel data and write to ffmpeg
+        {
+            let data = buffer_slice.get_mapped_range();
+            for row in 0..height {
+                let start = (row * padded_bytes_per_row) as usize;
+                let end = start + unpadded_bytes_per_row as usize;
+                if ffmpeg_stdin.write_all(&data[start..end]).is_err() {
+                    drop(data);
+                    output_buffer.unmap();
+                    return Err("ffmpeg process terminated unexpectedly".to_string());
+                }
+            }
+        }
+        output_buffer.unmap();
+
+        if (frame + 1) % 10 == 0 || frame == 0 || frame == total_frames - 1 {
+            log::info!("Recording frame {}/{} (zoom: {:.2e})", frame + 1, total_frames, zoom);
+        }
+    }
+
+    // Close stdin and wait for ffmpeg to finish
+    drop(ffmpeg_stdin);
+    let ffmpeg_output = ffmpeg.wait_with_output()
+        .map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
+
+    if !ffmpeg_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
+        return Err(format!("ffmpeg exited with error: {}", stderr));
+    }
+
+    log::info!("Video saved: {:?}", output_path);
+    Ok(output_filename)
+}
+
+/// Generate a timestamped filename for video export
+pub fn generate_video_filename(fractal_name: &str, resolution: &ExportResolution) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    format!(
+        "fractal_{}_{}_{}s.mp4",
+        fractal_name.to_lowercase().replace(' ', "_"),
+        resolution.label(),
+        secs
+    )
 }
 
 /// Generate a timestamped filename for export

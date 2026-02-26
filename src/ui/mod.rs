@@ -2,7 +2,7 @@
 mod control_panel;
 mod palette_editor;
 
-pub use control_panel::{ControlPanel, PanelAction};
+pub use control_panel::{ControlPanel, PanelAction, RecordingState};
 pub use palette_editor::PaletteEditor;
 
 use egui_winit::State as EguiState;

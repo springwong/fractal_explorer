@@ -1,5 +1,5 @@
 use crate::coloring::{ColorScheme, PresetPalettes};
-use crate::export::ExportResolution;
+use crate::export::{ExportResolution, VideoSettings};
 use crate::fractals::FractalType;
 use glam::Vec2;
 
@@ -11,6 +11,28 @@ pub enum PanelAction {
     OpenPaletteEditor,
     SelectPreset(usize),
     ToggleLinkedMode,
+    StartRecording(VideoSettings),
+}
+
+/// Persistent state for the video recording UI section
+pub struct RecordingState {
+    pub target_zoom_exp: f64,  // log10 of target zoom
+    pub duration_secs: f64,
+    pub fps: u32,
+    pub resolution: ExportResolution,
+    pub is_recording: bool,
+}
+
+impl Default for RecordingState {
+    fn default() -> Self {
+        Self {
+            target_zoom_exp: 6.0, // 1e6
+            duration_secs: 5.0,
+            fps: 30,
+            resolution: ExportResolution::HD1080p,
+            is_recording: false,
+        }
+    }
 }
 
 /// Control panel UI state and rendering
@@ -30,6 +52,7 @@ impl ControlPanel {
         using_f64: bool,
         linked_mode: bool,
         linked_julia_c: Vec2,
+        recording_state: &mut RecordingState,
     ) -> PanelAction {
         let mut action = PanelAction::None;
 
@@ -161,6 +184,55 @@ impl ControlPanel {
                     }
                 });
                 ui.small("Keyboard: P = screenshot");
+
+                ui.separator();
+
+                // Record Video section
+                ui.heading("Record Video");
+                if recording_state.is_recording {
+                    ui.colored_label(egui::Color32::YELLOW, "Recording in progress...");
+                    ui.small("App will freeze until done.");
+                } else {
+                    ui.add(
+                        egui::Slider::new(&mut recording_state.target_zoom_exp, 2.0..=12.0)
+                            .text("Target Zoom")
+                            .custom_formatter(|v, _| format!("1e{:.0}", v))
+                    );
+
+                    ui.add(
+                        egui::Slider::new(&mut recording_state.duration_secs, 2.0..=60.0)
+                            .text("Duration (s)")
+                    );
+
+                    egui::ComboBox::from_label("FPS")
+                        .selected_text(format!("{}", recording_state.fps))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut recording_state.fps, 30, "30");
+                            ui.selectable_value(&mut recording_state.fps, 60, "60");
+                        });
+
+                    egui::ComboBox::from_label("Resolution")
+                        .selected_text(match recording_state.resolution {
+                            ExportResolution::HD1080p => "1080p",
+                            ExportResolution::UHD4K => "4K",
+                            _ => "1080p",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut recording_state.resolution, ExportResolution::HD1080p, "1080p");
+                            ui.selectable_value(&mut recording_state.resolution, ExportResolution::UHD4K, "4K");
+                        });
+
+                    if ui.button("Start Recording").clicked() {
+                        let settings = VideoSettings {
+                            resolution: recording_state.resolution,
+                            fps: recording_state.fps,
+                            duration_secs: recording_state.duration_secs,
+                            target_zoom: 10.0f64.powf(recording_state.target_zoom_exp),
+                        };
+                        action = PanelAction::StartRecording(settings);
+                    }
+                    ui.small("Requires ffmpeg installed");
+                }
 
                 ui.separator();
 

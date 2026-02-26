@@ -10,8 +10,8 @@ use coloring::ColorScheme;
 use fractals::FractalType;
 use glam::{UVec2, Vec2};
 use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline, ds_split, compute_reference_orbit, compute_reference_orbit_julia};
-use export::ExportResolution;
-use ui::{ControlPanel, PanelAction, PaletteEditor, UiContext};
+use export::{ExportResolution, VideoSettings};
+use ui::{ControlPanel, PanelAction, PaletteEditor, RecordingState, UiContext};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -54,6 +54,8 @@ struct App<'window> {
 
     // Export state
     pending_export: Option<ExportResolution>,
+    pending_record: Option<VideoSettings>,
+    recording_state: RecordingState,
     last_uniforms: FractalUniforms,
 
     // Buddhabrot state
@@ -93,6 +95,8 @@ impl<'window> App<'window> {
             palette_editor: PaletteEditor::new(),
             palette_dirty: true, // Upload initial palette on first frame
             pending_export: None,
+            pending_record: None,
+            recording_state: RecordingState::default(),
             last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0, 0.0),
             buddhabrot_seed: 0,
             buddhabrot_dirty: true,
@@ -171,6 +175,7 @@ impl<'window> App<'window> {
                 using_f64,
                 self.linked_mode,
                 self.linked_julia_c,
+                &mut self.recording_state,
             );
 
             // Show palette editor if open
@@ -191,6 +196,9 @@ impl<'window> App<'window> {
             }
             PanelAction::ToggleLinkedMode => {
                 self.pending_toggle_linked = true;
+            }
+            PanelAction::StartRecording(settings) => {
+                self.pending_record = Some(settings);
             }
             PanelAction::None => {}
         }
@@ -458,6 +466,27 @@ impl<'window> App<'window> {
         ui.finish(window, full_output);
 
         surface_texture.present();
+
+        // Process pending video recording
+        if let Some(settings) = self.pending_record.take() {
+            self.recording_state.is_recording = true;
+            let palette = self.current_color.get_palette();
+            let lut = palette.generate_lut();
+            match export::record_video(
+                &gpu.device,
+                &gpu.queue,
+                &self.current_fractal,
+                &self.last_uniforms,
+                &settings,
+                self.camera.center,
+                self.camera.zoom,
+                &lut,
+            ) {
+                Ok(filename) => log::info!("Video saved: {}", filename),
+                Err(e) => log::error!("Video recording failed: {}", e),
+            }
+            self.recording_state.is_recording = false;
+        }
 
         // Process pending export
         if let Some(resolution) = self.pending_export.take() {
