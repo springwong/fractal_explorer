@@ -1,7 +1,13 @@
 use crate::fractals::FractalType;
-use crate::renderer::{FractalUniforms, compute_reference_orbit, compute_reference_orbit_julia, ds_split};
+use crate::renderer::{FractalUniforms, compute_reference_orbit, compute_reference_orbit_julia};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::renderer::ds_split;
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Stdio};
 
 /// Export resolution presets
@@ -38,24 +44,16 @@ impl ExportResolution {
     }
 }
 
-/// Export the current fractal view as a PNG file
-pub fn export_png(
+/// Render fractal to raw RGBA pixels at the given resolution (shared by native and wasm export)
+fn render_to_pixels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     fractal_type: &FractalType,
     uniforms: &FractalUniforms,
     resolution: ExportResolution,
-    output_path: &Path,
-) -> Result<(), String> {
+) -> Result<(Vec<u8>, u32, u32), String> {
     let (width, height) = resolution.dimensions();
     let aspect_ratio = width as f32 / height as f32;
-
-    log::info!(
-        "Exporting {}x{} PNG to {:?}...",
-        width,
-        height,
-        output_path
-    );
 
     // Recompute pixel_step for export resolution (height differs from screen)
     let zoom_f64 = uniforms.zoom as f64 + uniforms.zoom_lo as f64;
@@ -310,6 +308,29 @@ pub fn export_png(
     drop(data);
     output_buffer.unmap();
 
+    Ok((pixels, width, height))
+}
+
+/// Export the current fractal view as a PNG file (native: saves to disk)
+#[cfg(not(target_arch = "wasm32"))]
+pub fn export_png(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    fractal_type: &FractalType,
+    uniforms: &FractalUniforms,
+    resolution: ExportResolution,
+    output_path: &Path,
+) -> Result<(), String> {
+    let (width, height) = resolution.dimensions();
+    log::info!(
+        "Exporting {}x{} PNG to {:?}...",
+        width,
+        height,
+        output_path
+    );
+
+    let (pixels, width, height) = render_to_pixels(device, queue, fractal_type, uniforms, resolution)?;
+
     // Save as PNG
     let img: image::RgbaImage =
         image::ImageBuffer::from_raw(width, height, pixels)
@@ -319,6 +340,75 @@ pub fn export_png(
         .map_err(|e| format!("Failed to save PNG: {}", e))?;
 
     log::info!("Exported PNG: {:?} ({}x{})", output_path, width, height);
+    Ok(())
+}
+
+/// Export the current fractal view as a PNG (wasm: triggers browser download)
+#[cfg(target_arch = "wasm32")]
+pub fn export_png(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    fractal_type: &FractalType,
+    uniforms: &FractalUniforms,
+    resolution: ExportResolution,
+    filename: &str,
+) -> Result<(), String> {
+    let (pixels, width, height) = render_to_pixels(device, queue, fractal_type, uniforms, resolution)?;
+
+    // Encode PNG in memory
+    let img: image::RgbaImage =
+        image::ImageBuffer::from_raw(width, height, pixels)
+            .ok_or_else(|| "Failed to create image from pixel data".to_string())?;
+
+    let mut png_data: Vec<u8> = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
+    use image::ImageEncoder;
+    encoder.write_image(&img, width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+
+    // Trigger browser download
+    trigger_browser_download(filename, &png_data, "image/png")?;
+
+    log::info!("PNG download triggered: {} ({}x{})", filename, width, height);
+    Ok(())
+}
+
+/// Trigger a file download in the browser via Blob + anchor click
+#[cfg(target_arch = "wasm32")]
+fn trigger_browser_download(filename: &str, data: &[u8], mime_type: &str) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    use web_sys::BlobPropertyBag;
+
+    let window = web_sys::window().ok_or("No window")?;
+    let document = window.document().ok_or("No document")?;
+
+    // Create Blob from data
+    let uint8_array = js_sys::Uint8Array::from(data);
+    let array = js_sys::Array::new();
+    array.push(&uint8_array.buffer());
+
+    let blob_opts = BlobPropertyBag::new();
+    blob_opts.set_type(mime_type);
+    let blob = web_sys::Blob::new_with_buffer_source_sequence_and_options(&array, &blob_opts)
+        .map_err(|e| format!("Failed to create blob: {:?}", e))?;
+
+    let url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|e| format!("Failed to create object URL: {:?}", e))?;
+
+    // Create anchor element, set href and download, click it
+    let anchor: web_sys::HtmlAnchorElement = document
+        .create_element("a")
+        .map_err(|e| format!("Failed to create anchor: {:?}", e))?
+        .dyn_into()
+        .map_err(|_| "Failed to cast to HtmlAnchorElement")?;
+
+    anchor.set_href(&url);
+    anchor.set_download(filename);
+    anchor.click();
+
+    // Clean up
+    let _ = web_sys::Url::revoke_object_url(&url);
+
     Ok(())
 }
 
@@ -343,6 +433,7 @@ impl Default for VideoSettings {
 }
 
 /// Check if ffmpeg is available on the system
+#[cfg(not(target_arch = "wasm32"))]
 fn check_ffmpeg() -> Result<(), String> {
     Command::new("ffmpeg")
         .arg("-version")
@@ -354,6 +445,7 @@ fn check_ffmpeg() -> Result<(), String> {
 }
 
 /// Record a zoom animation video by rendering frames offline and piping to ffmpeg
+#[cfg(not(target_arch = "wasm32"))]
 pub fn record_video(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -744,7 +836,23 @@ pub fn record_video(
     Ok(output_filename)
 }
 
+/// Video recording stub for wasm (not supported)
+#[cfg(target_arch = "wasm32")]
+pub fn record_video(
+    _device: &wgpu::Device,
+    _queue: &wgpu::Queue,
+    _fractal_type: &FractalType,
+    _base_uniforms: &FractalUniforms,
+    _settings: &VideoSettings,
+    _center: glam::DVec2,
+    _start_zoom: f64,
+    _palette_lut: &[u8; 1024],
+) -> Result<String, String> {
+    Err("Video recording is not supported in the browser".to_string())
+}
+
 /// Generate a timestamped filename for video export
+#[cfg(not(target_arch = "wasm32"))]
 pub fn generate_video_filename(fractal_name: &str, resolution: &ExportResolution) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -760,15 +868,25 @@ pub fn generate_video_filename(fractal_name: &str, resolution: &ExportResolution
 
 /// Generate a timestamped filename for export
 pub fn generate_filename(fractal_name: &str, resolution: &ExportResolution) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    // Simple timestamp: YYYYMMDD_HHMMSS approximation using unix time
+    let secs = current_timestamp_secs();
     format!(
         "fractal_{}_{}_{}s.png",
         fractal_name.to_lowercase().replace(' ', "_"),
         resolution.label(),
         secs
     )
+}
+
+/// Get current timestamp in seconds (platform-conditional)
+#[cfg(not(target_arch = "wasm32"))]
+fn current_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_timestamp_secs() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
 }

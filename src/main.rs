@@ -29,6 +29,25 @@ enum ActiveViewport {
     None,
 }
 
+/// Portable instant type for FPS tracking
+#[cfg(not(target_arch = "wasm32"))]
+type FrameInstant = std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+struct FrameInstant(f64);
+
+#[cfg(target_arch = "wasm32")]
+impl FrameInstant {
+    fn now() -> Self {
+        Self(js_sys::Date::now())
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        let ms = js_sys::Date::now() - self.0;
+        std::time::Duration::from_millis(ms.max(0.0) as u64)
+    }
+}
+
 /// Main application state
 struct App<'window> {
     window: Option<Arc<Window>>,
@@ -64,7 +83,7 @@ struct App<'window> {
     prev_fractal_type_id: u32,
 
     // FPS tracking
-    last_frame_time: std::time::Instant,
+    last_frame_time: FrameInstant,
     frame_count: u32,
     fps: f32,
 
@@ -101,7 +120,7 @@ impl<'window> App<'window> {
             buddhabrot_seed: 0,
             buddhabrot_dirty: true,
             prev_fractal_type_id: 0,
-            last_frame_time: std::time::Instant::now(),
+            last_frame_time: FrameInstant::now(),
             frame_count: 0,
             fps: 0.0,
             linked_mode: false,
@@ -111,6 +130,16 @@ impl<'window> App<'window> {
             active_viewport: ActiveViewport::None,
             pending_toggle_linked: false,
         }
+    }
+
+    /// Initialize GPU and pipelines after window creation (async)
+    async fn init_gpu(window: Arc<Window>) -> (GpuContext<'window>, ComputePipeline, RenderPipeline, UiContext) {
+        let size = window.inner_size();
+        let gpu = GpuContext::new(window.clone()).await;
+        let compute = ComputePipeline::new(&gpu.device, size.width, size.height);
+        let render = RenderPipeline::new(&gpu.device, gpu.surface_config.format, &compute.texture_view, &compute.julia_texture_view);
+        let ui = UiContext::new(&gpu.device, gpu.surface_config.format, &window);
+        (gpu, compute, render, ui)
     }
 
     fn toggle_linked_mode(&mut self) {
@@ -494,17 +523,36 @@ impl<'window> App<'window> {
                 self.current_fractal.name(),
                 &resolution,
             );
-            let path = std::path::Path::new("export").join(&filename);
-            match export::export_png(
-                &gpu.device,
-                &gpu.queue,
-                &self.current_fractal,
-                &self.last_uniforms,
-                resolution,
-                &path,
-            ) {
-                Ok(()) => log::info!("Export saved: {}", filename),
-                Err(e) => log::error!("Export failed: {}", e),
+
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let path = std::path::Path::new("export").join(&filename);
+                match export::export_png(
+                    &gpu.device,
+                    &gpu.queue,
+                    &self.current_fractal,
+                    &self.last_uniforms,
+                    resolution,
+                    &path,
+                ) {
+                    Ok(()) => log::info!("Export saved: {}", filename),
+                    Err(e) => log::error!("Export failed: {}", e),
+                }
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            {
+                match export::export_png(
+                    &gpu.device,
+                    &gpu.queue,
+                    &self.current_fractal,
+                    &self.last_uniforms,
+                    resolution,
+                    &filename,
+                ) {
+                    Ok(()) => log::info!("Export saved: {}", filename),
+                    Err(e) => log::error!("Export failed: {}", e),
+                }
             }
         }
 
@@ -522,7 +570,7 @@ impl<'window> App<'window> {
                 self.max_iter
             );
             self.frame_count = 0;
-            self.last_frame_time = std::time::Instant::now();
+            self.last_frame_time = FrameInstant::now();
         }
     }
 
@@ -935,30 +983,73 @@ impl ApplicationHandler for App<'_> {
             .with_inner_size(winit::dpi::PhysicalSize::new(1920, 1080));
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
+        // On wasm, attach canvas to document body and size to viewport
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::platform::web::WindowExtWebSys;
+            let canvas = window.canvas().expect("Failed to get canvas");
+            web_sys::window()
+                .and_then(|win| win.document())
+                .and_then(|doc| doc.body())
+                .map(|body| body.append_child(&canvas).ok());
+
+            // Set canvas pixel buffer to match viewport * devicePixelRatio
+            if let Some(win) = web_sys::window() {
+                let dpr = win.device_pixel_ratio();
+                let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1920.0);
+                let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(1080.0);
+                let pixel_w = (css_w * dpr) as u32;
+                let pixel_h = (css_h * dpr) as u32;
+                canvas.set_width(pixel_w);
+                canvas.set_height(pixel_h);
+                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(pixel_w, pixel_h));
+            }
+        }
+
         let size = window.inner_size();
+        // On wasm, inner_size may still be 0 before layout; use a fallback
+        let (sw, sh) = if size.width == 0 || size.height == 0 {
+            (1920, 1080)
+        } else {
+            (size.width, size.height)
+        };
 
         // Initialize camera
-        self.camera.resize(UVec2::new(size.width, size.height));
+        self.camera.resize(UVec2::new(sw, sh));
 
-        // Initialize GPU
-        let gpu = pollster::block_on(GpuContext::new(window.clone()));
+        // Initialize GPU (platform-specific async handling)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (gpu, compute, render, ui) = pollster::block_on(Self::init_gpu(window.clone()));
+            self.ui = Some(ui);
+            self.gpu = Some(gpu);
+            self.compute = Some(compute);
+            self.render = Some(render);
+            self.window = Some(window);
+            log::info!("Application initialized successfully");
+        }
 
-        // Create compute pipeline
-        let compute = ComputePipeline::new(&gpu.device, size.width, size.height);
-
-        // Create render pipeline
-        let render = RenderPipeline::new(&gpu.device, gpu.surface_config.format, &compute.texture_view, &compute.julia_texture_view);
-
-        // Initialize egui
-        let ui = UiContext::new(&gpu.device, gpu.surface_config.format, &window);
-
-        self.ui = Some(ui);
-        self.window = Some(window);
-        self.gpu = Some(gpu);
-        self.compute = Some(compute);
-        self.render = Some(render);
-
-        log::info!("Application initialized successfully");
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.window = Some(window.clone());
+            // On wasm we need spawn_local for async GPU init.
+            // Cast pointer through usize to satisfy 'static requirement.
+            // SAFETY: App is owned by spawn_app and lives for the program duration.
+            // The future resolves on the same single-threaded wasm executor.
+            let app_addr = self as *mut Self as usize;
+            wasm_bindgen_futures::spawn_local(async move {
+                let (gpu, compute, render, ui) = App::init_gpu(window.clone()).await;
+                let app = unsafe { &mut *(app_addr as *mut App) };
+                app.ui = Some(ui);
+                app.gpu = Some(gpu);
+                app.compute = Some(compute);
+                app.render = Some(render);
+                log::info!("Application initialized successfully (wasm)");
+                // Trigger first redraw now that GPU is ready
+                window.request_redraw();
+            });
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: winit::window::WindowId, event: WindowEvent) {
@@ -1037,11 +1128,21 @@ impl ApplicationHandler for App<'_> {
 }
 
 fn main() {
-    // Initialize logger
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Warn) // Only warnings and errors
-        .filter_module("fractal_explorer", log::LevelFilter::Info) // Our app's info logs
-        .init();
+    // Initialize logger (platform-specific)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Warn)
+            .filter_module("fractal_explorer", log::LevelFilter::Info)
+            .init();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        console_error_panic_hook::set_once();
+        console_log::init_with_level(log::Level::Info)
+            .expect("Failed to initialize console_log");
+    }
 
     log::info!("Starting Fractal Explorer...");
 
@@ -1049,9 +1150,17 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    // Create app
-    let mut app = App::new();
+    // Create app and run event loop (platform-specific)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut app = App::new();
+        event_loop.run_app(&mut app).unwrap();
+    }
 
-    // Run event loop
-    event_loop.run_app(&mut app).unwrap();
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::EventLoopExtWebSys;
+        let app = App::new();
+        event_loop.spawn_app(app);
+    }
 }

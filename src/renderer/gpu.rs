@@ -15,8 +15,13 @@ impl<'window> GpuContext<'window> {
     /// Initialize wgpu with a window
     pub async fn new(window: Arc<Window>) -> Self {
         // Create instance
+        #[cfg(target_arch = "wasm32")]
+        let backends = wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL;
+        #[cfg(not(target_arch = "wasm32"))]
+        let backends = wgpu::Backends::all();
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends,
             ..Default::default()
         });
 
@@ -34,12 +39,18 @@ impl<'window> GpuContext<'window> {
             .expect("Failed to find suitable GPU adapter");
 
         // Request device and queue
+        // On wasm, use conservative limits to avoid requesting unrecognized WebGPU limits
+        #[cfg(target_arch = "wasm32")]
+        let required_limits = wgpu::Limits::downlevel_webgl2_defaults();
+        #[cfg(not(target_arch = "wasm32"))]
+        let required_limits = wgpu::Limits::default();
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Main Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     memory_hints: Default::default(),
                 },
                 None,
