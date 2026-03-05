@@ -984,9 +984,20 @@ impl<'window> App<'window> {
         }
     }
 
-    fn is_pointer_over_ui(&self) -> bool {
+    fn is_touch_over_ui(&self, pos: Vec2) -> bool {
         if let Some(ref ui) = self.ui {
-            ui.egui_ctx.is_pointer_over_area()
+            // Check if touch position is inside any egui area by querying layer rects
+            let egui_pos = egui::pos2(pos.x, pos.y);
+            ui.egui_ctx.available_rect(); // ensure ctx is up to date
+            // Use the panel width: if the touch is within the panel region, it's over UI
+            let panel_rect = ui.egui_ctx.memory(|mem| {
+                mem.area_rect(egui::Id::new("control_panel"))
+            });
+            if let Some(rect) = panel_rect {
+                rect.contains(egui_pos)
+            } else {
+                false
+            }
         } else {
             false
         }
@@ -1154,7 +1165,8 @@ impl ApplicationHandler for App<'_> {
 
         // Always handle touch events for mobile pan/zoom, even if egui consumed them
         if let WindowEvent::Touch(touch) = &event {
-            if !self.is_pointer_over_ui() {
+            let touch_pos = Vec2::new(touch.location.x as f32, touch.location.y as f32);
+            if !self.is_touch_over_ui(touch_pos) {
                 self.handle_touch(*touch);
             }
         }
