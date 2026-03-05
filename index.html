@@ -9,13 +9,16 @@
             margin: 0;
             padding: 0;
             width: 100%;
-            height: 100%;
+            height: 100dvh;
             overflow: hidden;
             background: #000;
+            position: fixed;
+            top: 0;
+            left: 0;
         }
         canvas {
             width: 100% !important;
-            height: 100% !important;
+            height: 100dvh !important;
             display: block !important;
             touch-action: none;
         }
@@ -45,6 +48,28 @@ if (typeof GPUAdapter !== "undefined") {
         }
         return orig.call(this, desc);
     };
+}
+
+// Force canvas resize after load to fix mobile initial viewport height.
+// On mobile browsers, the visual viewport may not match 100% on first paint.
+function fixCanvasSize() {
+    const canvas = document.querySelector("canvas");
+    if (canvas) {
+        const dpr = window.devicePixelRatio || 1;
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        // Trigger winit's resize handler
+        window.dispatchEvent(new Event("resize"));
+    }
+}
+// Run after a short delay to let the browser settle its viewport
+setTimeout(fixCanvasSize, 100);
+setTimeout(fixCanvasSize, 500);
+// Also fix on visualViewport resize (mobile address bar show/hide)
+if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", fixCanvasSize);
 }
 </script>
 </body>
