@@ -33,12 +33,6 @@ function __wbg_get_imports() {
             const ret = arg0 === undefined;
             return ret;
         },
-        __wbg___wbindgen_number_get_34bb9d9dcfa21373: function(arg0, arg1) {
-            const obj = arg1;
-            const ret = typeof(obj) === 'number' ? obj : undefined;
-            getDataViewMemory0().setFloat64(arg0 + 8 * 1, isLikeNone(ret) ? 0 : ret, true);
-            getDataViewMemory0().setInt32(arg0 + 4 * 0, !isLikeNone(ret), true);
-        },
         __wbg___wbindgen_string_get_395e606bd0ee4427: function(arg0, arg1) {
             const obj = arg1;
             const ret = typeof(obj) === 'string' ? obj : undefined;
@@ -472,14 +466,6 @@ function __wbg_get_imports() {
             const ret = arg0.inlineSize;
             return ret;
         },
-        __wbg_innerHeight_ba245c3eff70b2a1: function() { return handleError(function (arg0) {
-            const ret = arg0.innerHeight;
-            return ret;
-        }, arguments); },
-        __wbg_innerWidth_e6af2d66d3b06991: function() { return handleError(function (arg0) {
-            const ret = arg0.innerWidth;
-            return ret;
-        }, arguments); },
         __wbg_instanceof_GpuAdapter_8825bf3533b2dc81: function(arg0) {
             let result;
             try {
