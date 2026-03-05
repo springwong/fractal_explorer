@@ -39,27 +39,43 @@ if (typeof GPUAdapter !== "undefined") {
     };
 }
 
-// Force canvas resize after load to fix mobile initial viewport height.
-// On mobile browsers, the visual viewport may not match 100% on first paint.
-function fixCanvasSize() {
-    const canvas = document.querySelector("canvas");
-    if (canvas) {
-        const dpr = window.devicePixelRatio || 1;
-        const w = window.innerWidth;
-        const h = window.innerHeight;
-        canvas.width = Math.round(w * dpr);
-        canvas.height = Math.round(h * dpr);
-        // Trigger winit's resize handler
-        window.dispatchEvent(new Event("resize"));
+// Use ResizeObserver to sync canvas pixel buffer to its actual CSS layout size.
+// This fires whenever the canvas layout changes (initial load, rotation, address bar).
+// Unlike window.innerHeight, the observed size reflects the real rendered dimensions.
+(function() {
+    function watchCanvas() {
+        const canvas = document.querySelector("canvas");
+        if (!canvas) {
+            // Canvas isn't in DOM yet (wasm still loading), retry
+            requestAnimationFrame(watchCanvas);
+            return;
+        }
+        const observer = new ResizeObserver(function(entries) {
+            for (const entry of entries) {
+                const dpr = window.devicePixelRatio || 1;
+                // Use contentBoxSize for the actual CSS layout dimensions
+                let cssW, cssH;
+                if (entry.contentBoxSize && entry.contentBoxSize[0]) {
+                    cssW = entry.contentBoxSize[0].inlineSize;
+                    cssH = entry.contentBoxSize[0].blockSize;
+                } else {
+                    // Fallback for older browsers
+                    cssW = entry.contentRect.width;
+                    cssH = entry.contentRect.height;
+                }
+                const pixelW = Math.round(cssW * dpr);
+                const pixelH = Math.round(cssH * dpr);
+                if (pixelW > 0 && pixelH > 0 && (canvas.width !== pixelW || canvas.height !== pixelH)) {
+                    canvas.width = pixelW;
+                    canvas.height = pixelH;
+                    window.dispatchEvent(new Event("resize"));
+                }
+            }
+        });
+        observer.observe(canvas);
     }
-}
-// Run after a short delay to let the browser settle its viewport
-setTimeout(fixCanvasSize, 100);
-setTimeout(fixCanvasSize, 500);
-// Also fix on visualViewport resize (mobile address bar show/hide)
-if (window.visualViewport) {
-    window.visualViewport.addEventListener("resize", fixCanvasSize);
-}
+    watchCanvas();
+})();
 </script>
 </body>
 </html>
