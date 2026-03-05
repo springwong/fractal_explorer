@@ -589,6 +589,9 @@ impl<'window> App<'window> {
                 &resolution,
             );
 
+            let palette = self.current_color.get_palette();
+            let lut = palette.generate_lut();
+
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let path = std::path::Path::new("export").join(&filename);
@@ -599,6 +602,7 @@ impl<'window> App<'window> {
                     &self.last_uniforms,
                     resolution,
                     &path,
+                    &lut,
                 ) {
                     Ok(()) => log::info!("Export saved: {}", filename),
                     Err(e) => log::error!("Export failed: {}", e),
@@ -614,6 +618,7 @@ impl<'window> App<'window> {
                     &self.last_uniforms,
                     resolution,
                     &filename,
+                    &lut,
                 ) {
                     Ok(()) => log::info!("Export saved: {}", filename),
                     Err(e) => log::error!("Export failed: {}", e),

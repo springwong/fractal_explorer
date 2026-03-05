@@ -51,6 +51,7 @@ fn render_to_pixels(
     fractal_type: &FractalType,
     uniforms: &FractalUniforms,
     resolution: ExportResolution,
+    palette_lut: &[u8; 1024],
 ) -> Result<(Vec<u8>, u32, u32), String> {
     let (width, height) = resolution.dimensions();
     let aspect_ratio = width as f32 / height as f32;
@@ -86,6 +87,15 @@ fn render_to_pixels(
         mapped_at_creation: false,
     });
     queue.write_buffer(&uniform_buffer, 0, bytemuck::bytes_of(&export_uniforms));
+
+    // Create palette LUT buffer
+    let palette_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Export Palette Buffer"),
+        size: 1024,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&palette_buffer, 0, palette_lut);
 
     // Create storage texture at target resolution
     let storage_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -136,6 +146,13 @@ fn render_to_pixels(
     };
 
     // Build bind group layout entries
+    // Standard: binding 0=uniform, 1=texture, 2=palette
+    // Perturbation: binding 0=uniform, 1=texture, 2=orbit, 3=palette
+    let storage_ro = wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Storage { read_only: true },
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    };
     let mut layout_entries = vec![
         wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -159,15 +176,17 @@ fn render_to_pixels(
         },
     ];
     if use_perturbation {
+        // binding 2 = orbit, binding 3 = palette
         layout_entries.push(wgpu::BindGroupLayoutEntry {
-            binding: 2,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
+            binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: storage_ro, count: None,
+        });
+        layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: storage_ro, count: None,
+        });
+    } else {
+        // binding 2 = palette
+        layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: storage_ro, count: None,
         });
     }
 
@@ -187,10 +206,21 @@ fn render_to_pixels(
             resource: wgpu::BindingResource::TextureView(&texture_view),
         },
     ];
-    if let Some(ref ob) = orbit_buffer {
+    if use_perturbation {
+        // binding 2 = orbit, binding 3 = palette
         bg_entries.push(wgpu::BindGroupEntry {
             binding: 2,
-            resource: ob.as_entire_binding(),
+            resource: orbit_buffer.as_ref().unwrap().as_entire_binding(),
+        });
+        bg_entries.push(wgpu::BindGroupEntry {
+            binding: 3,
+            resource: palette_buffer.as_entire_binding(),
+        });
+    } else {
+        // binding 2 = palette
+        bg_entries.push(wgpu::BindGroupEntry {
+            binding: 2,
+            resource: palette_buffer.as_entire_binding(),
         });
     }
 
@@ -320,6 +350,7 @@ pub fn export_png(
     uniforms: &FractalUniforms,
     resolution: ExportResolution,
     output_path: &Path,
+    palette_lut: &[u8; 1024],
 ) -> Result<(), String> {
     let (width, height) = resolution.dimensions();
     log::info!(
@@ -329,7 +360,7 @@ pub fn export_png(
         output_path
     );
 
-    let (pixels, width, height) = render_to_pixels(device, queue, fractal_type, uniforms, resolution)?;
+    let (pixels, width, height) = render_to_pixels(device, queue, fractal_type, uniforms, resolution, palette_lut)?;
 
     // Save as PNG
     let img: image::RgbaImage =
@@ -357,6 +388,7 @@ pub fn export_png(
     uniforms: &FractalUniforms,
     resolution: ExportResolution,
     filename: &str,
+    palette_lut: &[u8; 1024],
 ) -> Result<(), String> {
     let (width, height) = resolution.dimensions();
     let aspect_ratio = width as f32 / height as f32;
@@ -390,6 +422,14 @@ pub fn export_png(
         mapped_at_creation: false,
     });
     queue.write_buffer(&uniform_buffer, 0, bytemuck::bytes_of(&export_uniforms));
+
+    let palette_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Export Palette Buffer"),
+        size: 1024,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&palette_buffer, 0, palette_lut);
 
     let storage_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Export Storage Texture"),
@@ -432,7 +472,11 @@ pub fn export_png(
         None
     };
 
-    // Build bind group
+    // Build bind group — palette at binding 2 (standard) or binding 3 (perturbation)
+    let storage_ro = wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Storage { read_only: true },
+        has_dynamic_offset: false, min_binding_size: None,
+    };
     let mut layout_entries = vec![
         wgpu::BindGroupLayoutEntry {
             binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
@@ -446,11 +490,10 @@ pub fn export_png(
         },
     ];
     if use_perturbation {
-        layout_entries.push(wgpu::BindGroupLayoutEntry {
-            binding: 2, visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
-            count: None,
-        });
+        layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: storage_ro, count: None });
+        layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: storage_ro, count: None });
+    } else {
+        layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: storage_ro, count: None });
     }
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -461,8 +504,11 @@ pub fn export_png(
         wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&texture_view) },
     ];
-    if let Some(ref ob) = orbit_buffer {
-        bg_entries.push(wgpu::BindGroupEntry { binding: 2, resource: ob.as_entire_binding() });
+    if use_perturbation {
+        bg_entries.push(wgpu::BindGroupEntry { binding: 2, resource: orbit_buffer.as_ref().unwrap().as_entire_binding() });
+        bg_entries.push(wgpu::BindGroupEntry { binding: 3, resource: palette_buffer.as_entire_binding() });
+    } else {
+        bg_entries.push(wgpu::BindGroupEntry { binding: 2, resource: palette_buffer.as_entire_binding() });
     }
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
