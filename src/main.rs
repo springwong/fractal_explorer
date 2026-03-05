@@ -197,15 +197,24 @@ impl<'window> App<'window> {
         }
 
         // On wasm, the canvas CSS layout may settle after GPU init (e.g. mobile
-        // first load). Check if the surface size matches the window and resize.
+        // first load). Read the actual CSS layout size from the canvas element
+        // (clientWidth/Height) rather than window.inner_size() which may return
+        // stale values. If it differs from the surface, trigger a resize.
         #[cfg(target_arch = "wasm32")]
         {
             let needs_resize = if let (Some(ref window), Some(ref gpu_ctx)) = (&self.window, &self.gpu) {
-                let current = window.inner_size();
-                if current.width > 0 && current.height > 0
-                    && (gpu_ctx.surface_config.width != current.width || gpu_ctx.surface_config.height != current.height)
+                use winit::platform::web::WindowExtWebSys;
+                let canvas = window.canvas().unwrap();
+                let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
+                let pixel_w = (canvas.client_width() as f64 * dpr) as u32;
+                let pixel_h = (canvas.client_height() as f64 * dpr) as u32;
+                if pixel_w > 0 && pixel_h > 0
+                    && (gpu_ctx.surface_config.width != pixel_w || gpu_ctx.surface_config.height != pixel_h)
                 {
-                    Some(current)
+                    // Also update the canvas pixel buffer to match
+                    canvas.set_width(pixel_w);
+                    canvas.set_height(pixel_h);
+                    Some(winit::dpi::PhysicalSize::new(pixel_w, pixel_h))
                 } else {
                     None
                 }
@@ -1090,10 +1099,9 @@ impl ApplicationHandler for App<'_> {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        // On wasm, attach canvas to document body and set CSS to fill viewport.
-        // Don't set canvas.width/height here — let the CSS + ResizeObserver (in
-        // index.html) determine the correct pixel dimensions once layout settles.
-        // This avoids using window.innerHeight which is wrong on mobile first load.
+        // On wasm, attach canvas to document body and set pixel dimensions.
+        // Use screen.availHeight as a better estimate on mobile (not affected
+        // by browser chrome), with window.innerHeight as fallback.
         #[cfg(target_arch = "wasm32")]
         {
             use winit::platform::web::WindowExtWebSys;
@@ -1107,6 +1115,27 @@ impl ApplicationHandler for App<'_> {
                 .and_then(|win| win.document())
                 .and_then(|doc| doc.body())
                 .map(|body| body.append_child(&canvas).ok());
+
+            // Set canvas pixel buffer. Use screen dimensions on mobile for a
+            // better initial estimate (screen.availWidth/Height aren't affected
+            // by the browser chrome). The per-frame check will correct later.
+            if let Some(win) = web_sys::window() {
+                let dpr = win.device_pixel_ratio();
+                let screen = win.screen().ok();
+                let css_w = screen.as_ref()
+                    .and_then(|s| s.avail_width().ok())
+                    .map(|v| v as f64)
+                    .unwrap_or_else(|| win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1920.0));
+                let css_h = screen.as_ref()
+                    .and_then(|s| s.avail_height().ok())
+                    .map(|v| v as f64)
+                    .unwrap_or_else(|| win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(1080.0));
+                let pixel_w = (css_w * dpr) as u32;
+                let pixel_h = (css_h * dpr) as u32;
+                canvas.set_width(pixel_w);
+                canvas.set_height(pixel_h);
+                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(pixel_w, pixel_h));
+            }
         }
 
         let size = window.inner_size();

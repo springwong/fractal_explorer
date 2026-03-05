@@ -39,43 +39,8 @@ if (typeof GPUAdapter !== "undefined") {
     };
 }
 
-// Use ResizeObserver to sync canvas pixel buffer to its actual CSS layout size.
-// This fires whenever the canvas layout changes (initial load, rotation, address bar).
-// Unlike window.innerHeight, the observed size reflects the real rendered dimensions.
-(function() {
-    function watchCanvas() {
-        const canvas = document.querySelector("canvas");
-        if (!canvas) {
-            // Canvas isn't in DOM yet (wasm still loading), retry
-            requestAnimationFrame(watchCanvas);
-            return;
-        }
-        const observer = new ResizeObserver(function(entries) {
-            for (const entry of entries) {
-                const dpr = window.devicePixelRatio || 1;
-                // Use contentBoxSize for the actual CSS layout dimensions
-                let cssW, cssH;
-                if (entry.contentBoxSize && entry.contentBoxSize[0]) {
-                    cssW = entry.contentBoxSize[0].inlineSize;
-                    cssH = entry.contentBoxSize[0].blockSize;
-                } else {
-                    // Fallback for older browsers
-                    cssW = entry.contentRect.width;
-                    cssH = entry.contentRect.height;
-                }
-                const pixelW = Math.round(cssW * dpr);
-                const pixelH = Math.round(cssH * dpr);
-                if (pixelW > 0 && pixelH > 0 && (canvas.width !== pixelW || canvas.height !== pixelH)) {
-                    canvas.width = pixelW;
-                    canvas.height = pixelH;
-                    window.dispatchEvent(new Event("resize"));
-                }
-            }
-        });
-        observer.observe(canvas);
-    }
-    watchCanvas();
-})();
+// Canvas sizing is handled by the Rust per-frame check which reads
+// canvas.clientWidth/Height and syncs the pixel buffer + wgpu surface.
 </script>
 </body>
 </html>
