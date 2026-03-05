@@ -188,12 +188,36 @@ impl<'window> App<'window> {
             self.toggle_linked_mode();
         }
 
-        let Some(ref window) = self.window else { return };
         // GPU init is async on wasm — keep requesting redraws until ready
         if self.gpu.is_none() {
-            window.request_redraw();
+            if let Some(ref window) = self.window {
+                window.request_redraw();
+            }
             return;
         }
+
+        // On wasm, the canvas CSS layout may settle after GPU init (e.g. mobile
+        // first load). Check if the surface size matches the window and resize.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let needs_resize = if let (Some(ref window), Some(ref gpu_ctx)) = (&self.window, &self.gpu) {
+                let current = window.inner_size();
+                if current.width > 0 && current.height > 0
+                    && (gpu_ctx.surface_config.width != current.width || gpu_ctx.surface_config.height != current.height)
+                {
+                    Some(current)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(new_size) = needs_resize {
+                self.resize(new_size);
+            }
+        }
+
+        let Some(ref window) = self.window else { return };
         let Some(ref gpu) = self.gpu else { return };
         let Some(ref mut compute) = self.compute else { return };
         let Some(ref render) = self.render else { return };
@@ -1066,27 +1090,23 @@ impl ApplicationHandler for App<'_> {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        // On wasm, attach canvas to document body and size to viewport
+        // On wasm, attach canvas to document body and set CSS to fill viewport.
+        // Don't set canvas.width/height here — let the CSS + ResizeObserver (in
+        // index.html) determine the correct pixel dimensions once layout settles.
+        // This avoids using window.innerHeight which is wrong on mobile first load.
         #[cfg(target_arch = "wasm32")]
         {
             use winit::platform::web::WindowExtWebSys;
             let canvas = window.canvas().expect("Failed to get canvas");
+            // Set CSS style to fill viewport
+            let style = canvas.style();
+            let _ = style.set_property("width", "100%");
+            let _ = style.set_property("height", "100dvh");
+            let _ = style.set_property("display", "block");
             web_sys::window()
                 .and_then(|win| win.document())
                 .and_then(|doc| doc.body())
                 .map(|body| body.append_child(&canvas).ok());
-
-            // Set canvas pixel buffer to match viewport * devicePixelRatio
-            if let Some(win) = web_sys::window() {
-                let dpr = win.device_pixel_ratio();
-                let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1920.0);
-                let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(1080.0);
-                let pixel_w = (css_w * dpr) as u32;
-                let pixel_h = (css_h * dpr) as u32;
-                canvas.set_width(pixel_w);
-                canvas.set_height(pixel_h);
-                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(pixel_w, pixel_h));
-            }
         }
 
         let size = window.inner_size();
