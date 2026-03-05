@@ -517,59 +517,61 @@ pub fn export_png(
 
     queue.submit(std::iter::once(encoder.finish()));
 
-    // Async readback — spawn_local so we don't block the JS event loop
+    // Async readback — use Arc<AtomicBool> flag set by map_async callback,
+    // then poll with setTimeout yields until the mapping is ready.
     let filename = filename.to_string();
-    let buffer_slice = output_buffer.slice(..);
-    buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
+    let mapped_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mapped_flag_cb = mapped_flag.clone();
+
+    output_buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+        if let Err(ref e) = result {
+            log::error!("map_async failed: {:?}", e);
+        }
+        mapped_flag_cb.store(result.is_ok(), std::sync::atomic::Ordering::SeqCst);
+    });
 
     wasm_bindgen_futures::spawn_local(async move {
-        // Wait for the GPU to finish by yielding to the event loop
-        // The map_async callback will fire during a microtask checkpoint
-        loop {
-            if output_buffer.size() > 0 {
-                // Try to get mapped range — if mapping is done this succeeds
-                let mapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    output_buffer.slice(..).get_mapped_range()
-                }));
-                match mapped {
-                    Ok(data) => {
-                        let mut pixels = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
-                        for row in 0..height {
-                            let start = (row * padded_bytes_per_row) as usize;
-                            let end = start + unpadded_bytes_per_row as usize;
-                            pixels.extend_from_slice(&data[start..end]);
-                        }
-                        drop(data);
-                        output_buffer.unmap();
-
-                        // Encode PNG
-                        let img: image::RgbaImage = match image::ImageBuffer::from_raw(width, height, pixels) {
-                            Some(img) => img,
-                            None => {
-                                log::error!("Failed to create image from pixel data");
-                                return;
-                            }
-                        };
-                        let mut png_data: Vec<u8> = Vec::new();
-                        let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
-                        use image::ImageEncoder;
-                        if let Err(e) = encoder.write_image(&img, width, height, image::ExtendedColorType::Rgba8) {
-                            log::error!("Failed to encode PNG: {}", e);
-                            return;
-                        }
-
-                        match trigger_browser_download(&filename, &png_data, "image/png") {
-                            Ok(()) => log::info!("PNG download triggered: {} ({}x{})", filename, width, height),
-                            Err(e) => log::error!("Download failed: {}", e),
-                        }
-                        return;
-                    }
-                    Err(_) => {
-                        // Not mapped yet, yield and retry
-                        gloo_timers_sleep(50).await;
-                    }
-                }
+        // Yield to the JS event loop until the map callback fires
+        let mut attempts = 0;
+        while !mapped_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            gloo_timers_sleep(16).await;
+            attempts += 1;
+            if attempts > 300 { // ~5s timeout
+                log::error!("Export timed out waiting for buffer mapping");
+                return;
             }
+        }
+
+        // Buffer is now mapped — read pixels
+        let data = output_buffer.slice(..).get_mapped_range();
+        let mut pixels = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
+        for row in 0..height {
+            let start = (row * padded_bytes_per_row) as usize;
+            let end = start + unpadded_bytes_per_row as usize;
+            pixels.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        output_buffer.unmap();
+
+        // Encode PNG
+        let img: image::RgbaImage = match image::ImageBuffer::from_raw(width, height, pixels) {
+            Some(img) => img,
+            None => {
+                log::error!("Failed to create image from pixel data");
+                return;
+            }
+        };
+        let mut png_data: Vec<u8> = Vec::new();
+        let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
+        use image::ImageEncoder;
+        if let Err(e) = encoder.write_image(&img, width, height, image::ExtendedColorType::Rgba8) {
+            log::error!("Failed to encode PNG: {}", e);
+            return;
+        }
+
+        match trigger_browser_download(&filename, &png_data, "image/png") {
+            Ok(()) => log::info!("PNG download triggered: {} ({}x{})", filename, width, height),
+            Err(e) => log::error!("Download failed: {}", e),
         }
     });
 
