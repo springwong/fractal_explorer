@@ -7,6 +7,7 @@ use glam::Vec2;
 #[derive(Clone, Debug)]
 pub enum PanelAction {
     None,
+    ResizeCanvas,
     Export(ExportResolution),
     OpenPaletteEditor,
     SelectPreset(usize),
@@ -60,7 +61,12 @@ impl ControlPanel {
             .default_width(280.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Fractal Explorer");
+                ui.horizontal(|ui| {
+                    ui.heading("Fractal Explorer");
+                    if ui.button("⟳").on_hover_text("Fix canvas size").clicked() {
+                        action = PanelAction::ResizeCanvas;
+                    }
+                });
                 ui.separator();
 
                 // FPS display

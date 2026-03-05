@@ -78,6 +78,7 @@ struct App<'window> {
     // Export state
     pending_export: Option<ExportResolution>,
     pending_record: Option<VideoSettings>,
+    pending_resize_canvas: bool,
     recording_state: RecordingState,
     last_uniforms: FractalUniforms,
 
@@ -121,6 +122,7 @@ impl<'window> App<'window> {
             palette_dirty: true, // Upload initial palette on first frame
             pending_export: None,
             pending_record: None,
+            pending_resize_canvas: false,
             recording_state: RecordingState::default(),
             last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0, 0.0),
             buddhabrot_seed: 0,
@@ -186,6 +188,34 @@ impl<'window> App<'window> {
         if self.pending_toggle_linked {
             self.pending_toggle_linked = false;
             self.toggle_linked_mode();
+        }
+
+        // Handle pending canvas resize (mobile fix button)
+        if self.pending_resize_canvas {
+            self.pending_resize_canvas = false;
+            if let Some(ref window) = self.window {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    use winit::platform::web::WindowExtWebSys;
+                    let canvas = window.canvas().unwrap();
+                    let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
+                    let pixel_w = (canvas.client_width() as f64 * dpr) as u32;
+                    let pixel_h = (canvas.client_height() as f64 * dpr) as u32;
+                    if pixel_w > 0 && pixel_h > 0 {
+                        canvas.set_width(pixel_w);
+                        canvas.set_height(pixel_h);
+                        self.resize(winit::dpi::PhysicalSize::new(pixel_w, pixel_h));
+                        log::info!("Canvas resized to {}x{} (client: {}x{})", pixel_w, pixel_h, canvas.client_width(), canvas.client_height());
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let size = window.inner_size();
+                    if size.width > 0 && size.height > 0 {
+                        self.resize(size);
+                    }
+                }
+            }
         }
 
         // GPU init is async on wasm — keep requesting redraws until ready
@@ -275,6 +305,9 @@ impl<'window> App<'window> {
             }
             PanelAction::StartRecording(settings) => {
                 self.pending_record = Some(settings);
+            }
+            PanelAction::ResizeCanvas => {
+                self.pending_resize_canvas = true;
             }
             PanelAction::None => {}
         }
