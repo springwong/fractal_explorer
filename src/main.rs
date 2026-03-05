@@ -984,6 +984,14 @@ impl<'window> App<'window> {
         }
     }
 
+    fn is_pointer_over_ui(&self) -> bool {
+        if let Some(ref ui) = self.ui {
+            ui.egui_ctx.is_pointer_over_area()
+        } else {
+            false
+        }
+    }
+
     fn handle_touch(&mut self, touch: winit::event::Touch) {
         use winit::event::TouchPhase;
 
@@ -1144,6 +1152,13 @@ impl ApplicationHandler for App<'_> {
             return;
         }
 
+        // Always handle touch events for mobile pan/zoom, even if egui consumed them
+        if let WindowEvent::Touch(touch) = &event {
+            if !self.is_pointer_over_ui() {
+                self.handle_touch(*touch);
+            }
+        }
+
         // If egui consumed the event, don't pass to app
         if egui_consumed {
             return;
@@ -1184,9 +1199,7 @@ impl ApplicationHandler for App<'_> {
                 self.handle_keyboard(event);
             }
 
-            WindowEvent::Touch(touch) => {
-                self.handle_touch(touch);
-            }
+            // Touch is handled above (before egui consumed check)
 
             WindowEvent::RedrawRequested => {
                 self.render_frame();
