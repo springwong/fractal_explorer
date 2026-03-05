@@ -135,8 +135,11 @@ impl<'window> App<'window> {
     /// Initialize GPU and pipelines after window creation (async)
     async fn init_gpu(window: Arc<Window>) -> (GpuContext<'window>, ComputePipeline, RenderPipeline, UiContext) {
         let size = window.inner_size();
+        // Fallback to reasonable default if canvas hasn't been laid out yet
+        let w = if size.width > 0 { size.width } else { 1920 };
+        let h = if size.height > 0 { size.height } else { 1080 };
         let gpu = GpuContext::new(window.clone()).await;
-        let compute = ComputePipeline::new(&gpu.device, size.width, size.height);
+        let compute = ComputePipeline::new(&gpu.device, w, h);
         let render = RenderPipeline::new(&gpu.device, gpu.surface_config.format, &compute.texture_view, &compute.julia_texture_view);
         let ui = UiContext::new(&gpu.device, gpu.surface_config.format, &window);
         (gpu, compute, render, ui)
@@ -180,6 +183,11 @@ impl<'window> App<'window> {
         }
 
         let Some(ref window) = self.window else { return };
+        // GPU init is async on wasm — keep requesting redraws until ready
+        if self.gpu.is_none() {
+            window.request_redraw();
+            return;
+        }
         let Some(ref gpu) = self.gpu else { return };
         let Some(ref mut compute) = self.compute else { return };
         let Some(ref render) = self.render else { return };
@@ -1039,13 +1047,25 @@ impl ApplicationHandler for App<'_> {
             // The future resolves on the same single-threaded wasm executor.
             let app_addr = self as *mut Self as usize;
             wasm_bindgen_futures::spawn_local(async move {
-                let (gpu, compute, render, ui) = App::init_gpu(window.clone()).await;
+                let (mut gpu, compute, render, ui) = App::init_gpu(window.clone()).await;
+
+                // The surface may have been configured with 0x0 if the canvas
+                // wasn't laid out yet. Reconfigure with actual viewport size.
+                let size = window.inner_size();
+                if size.width > 0 && size.height > 0 {
+                    gpu.resize(size.width, size.height);
+                }
+
                 let app = unsafe { &mut *(app_addr as *mut App) };
+                if size.width > 0 && size.height > 0 {
+                    app.camera.resize(UVec2::new(size.width, size.height));
+                    app.julia_camera.resize(UVec2::new(size.width, size.height));
+                }
                 app.ui = Some(ui);
                 app.gpu = Some(gpu);
                 app.compute = Some(compute);
                 app.render = Some(render);
-                log::info!("Application initialized successfully (wasm)");
+                log::info!("Application initialized successfully (wasm), size: {}x{}", size.width, size.height);
                 // Trigger first redraw now that GPU is ready
                 window.request_redraw();
             });
