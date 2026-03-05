@@ -59,6 +59,7 @@ impl ControlPanel {
         egui::SidePanel::left("control_panel")
             .default_width(280.0)
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Fractal Explorer");
                 ui.separator();
 
@@ -252,6 +253,7 @@ impl ControlPanel {
                 ui.separator();
 
                 ui.small("Phase 3 Implementation");
+                }); // ScrollArea
             });
 
         action
