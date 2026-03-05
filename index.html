@@ -25,8 +25,8 @@
     </style>
     
 <script type="module">
-import init, * as bindings from '/fractal_explorer/fractal-explorer-48761005e8b45544.js';
-const wasm = await init({ module_or_path: '/fractal_explorer/fractal-explorer-48761005e8b45544_bg.wasm' });
+import init, * as bindings from '/fractal_explorer/fractal-explorer-5a47183af74289a8.js';
+const wasm = await init({ module_or_path: '/fractal_explorer/fractal-explorer-5a47183af74289a8_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -35,7 +35,7 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-<link rel="modulepreload" href="/fractal_explorer/fractal-explorer-48761005e8b45544.js" crossorigin="anonymous" integrity="sha384-nRh1oBcsvYJGlEmZ1Liao5WDGE1LAYYoxd9v5U0LPaQB62vK9T/PvnKYORB0YN70"><link rel="preload" href="/fractal_explorer/fractal-explorer-48761005e8b45544_bg.wasm" crossorigin="anonymous" integrity="sha384-O0OEtd5NiBoLqvvm+vP/A671arpJ6ZmJiKKqLgw6myp4qP92cQtb9oOn/OQDbGZJ" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/fractal_explorer/fractal-explorer-5a47183af74289a8.js" crossorigin="anonymous" integrity="sha384-nRh1oBcsvYJGlEmZ1Liao5WDGE1LAYYoxd9v5U0LPaQB62vK9T/PvnKYORB0YN70"><link rel="preload" href="/fractal_explorer/fractal-explorer-5a47183af74289a8_bg.wasm" crossorigin="anonymous" integrity="sha384-r8KNv/4ZJ9FhkqRq7BpDr59koAeQUCUuXGISu831D9Zy1Hj35dfwsoaBH3tXV+k+" as="fetch" type="application/wasm"></head>
 <body>
 <script>
 // Workaround: wgpu 22 sends maxInterStageShaderComponents which was
