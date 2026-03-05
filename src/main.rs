@@ -62,6 +62,10 @@ struct App<'window> {
     mouse_pressed: bool,
     last_mouse_pos: Option<Vec2>,
 
+    // Touch state (for mobile)
+    touches: std::collections::HashMap<u64, Vec2>,
+    last_pinch_distance: Option<f32>,
+
     // Fractal parameters
     max_iter: u32,
     current_fractal: FractalType,
@@ -108,6 +112,8 @@ impl<'window> App<'window> {
             mouse_pos: Vec2::ZERO,
             mouse_pressed: false,
             last_mouse_pos: None,
+            touches: std::collections::HashMap::new(),
+            last_pinch_distance: None,
             max_iter: 256,
             current_fractal: FractalType::Mandelbrot,
             current_color: ColorScheme::default(),
@@ -977,6 +983,55 @@ impl<'window> App<'window> {
             _ => {}
         }
     }
+
+    fn handle_touch(&mut self, touch: winit::event::Touch) {
+        use winit::event::TouchPhase;
+
+        let pos = Vec2::new(touch.location.x as f32, touch.location.y as f32);
+
+        match touch.phase {
+            TouchPhase::Started => {
+                self.touches.insert(touch.id, pos);
+            }
+            TouchPhase::Moved => {
+                let prev_pos = self.touches.get(&touch.id).copied();
+                self.touches.insert(touch.id, pos);
+
+                if self.touches.len() == 1 {
+                    // Single finger: pan
+                    if let Some(prev) = prev_pos {
+                        let delta = pos - prev;
+                        self.camera.pan(delta);
+                        if self.current_fractal.is_buddhabrot() {
+                            self.buddhabrot_dirty = true;
+                        }
+                    }
+                } else if self.touches.len() == 2 {
+                    // Two fingers: pinch to zoom
+                    let positions: Vec<Vec2> = self.touches.values().copied().collect();
+                    let distance = (positions[0] - positions[1]).length();
+
+                    if let Some(last_distance) = self.last_pinch_distance {
+                        if last_distance > 0.0 {
+                            let zoom_factor = (distance / last_distance) as f64;
+                            let midpoint = (positions[0] + positions[1]) / 2.0;
+                            self.camera.zoom_at(midpoint, zoom_factor);
+                            if self.current_fractal.is_buddhabrot() {
+                                self.buddhabrot_dirty = true;
+                            }
+                        }
+                    }
+                    self.last_pinch_distance = Some(distance);
+                }
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                self.touches.remove(&touch.id);
+                if self.touches.len() < 2 {
+                    self.last_pinch_distance = None;
+                }
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App<'_> {
@@ -1127,6 +1182,10 @@ impl ApplicationHandler for App<'_> {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 self.handle_keyboard(event);
+            }
+
+            WindowEvent::Touch(touch) => {
+                self.handle_touch(touch);
             }
 
             WindowEvent::RedrawRequested => {
