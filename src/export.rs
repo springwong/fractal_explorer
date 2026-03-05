@@ -343,7 +343,12 @@ pub fn export_png(
     Ok(())
 }
 
-/// Export the current fractal view as a PNG (wasm: triggers browser download)
+/// Export the current fractal view as a PNG (wasm: async, triggers browser download)
+///
+/// On wasm, buffer mapping is asynchronous — we dispatch the GPU work, then
+/// `spawn_local` an async task that awaits the map, encodes PNG, and triggers
+/// a browser download.  The function returns immediately (the download happens
+/// in the background).
 #[cfg(target_arch = "wasm32")]
 pub fn export_png(
     device: &wgpu::Device,
@@ -353,24 +358,232 @@ pub fn export_png(
     resolution: ExportResolution,
     filename: &str,
 ) -> Result<(), String> {
-    let (pixels, width, height) = render_to_pixels(device, queue, fractal_type, uniforms, resolution)?;
+    let (width, height) = resolution.dimensions();
+    let aspect_ratio = width as f32 / height as f32;
 
-    // Encode PNG in memory
-    let img: image::RgbaImage =
-        image::ImageBuffer::from_raw(width, height, pixels)
-            .ok_or_else(|| "Failed to create image from pixel data".to_string())?;
+    let zoom_f64 = uniforms.zoom as f64 + uniforms.zoom_lo as f64;
+    let export_pixel_step_x = (1.0 / (zoom_f64 * height as f64)) as f32;
+    let export_pixel_step_y = (-1.0 / (zoom_f64 * height as f64)) as f32;
 
-    let mut png_data: Vec<u8> = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
-    use image::ImageEncoder;
-    encoder.write_image(&img, width, height, image::ExtendedColorType::Rgba8)
-        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+    let export_uniforms = FractalUniforms::new(
+        uniforms.center,
+        uniforms.zoom,
+        aspect_ratio,
+        uniforms.max_iter,
+        uniforms.fractal_type,
+        uniforms.color_scheme,
+        uniforms.c_real,
+        uniforms.c_imag,
+        [uniforms.center_lo_x, uniforms.center_lo_y],
+        uniforms.zoom_lo,
+        export_pixel_step_x,
+        export_pixel_step_y,
+        uniforms.ref_escape_iter,
+        uniforms.rotation,
+    );
 
-    // Trigger browser download
-    trigger_browser_download(filename, &png_data, "image/png")?;
+    // Create GPU resources
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Export Uniform Buffer"),
+        size: std::mem::size_of::<FractalUniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&uniform_buffer, 0, bytemuck::bytes_of(&export_uniforms));
 
-    log::info!("PNG download triggered: {} ({}x{})", filename, width, height);
+    let storage_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Export Storage Texture"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let texture_view = storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Determine precision
+    let use_f64 = zoom_f64 >= 5.0e3;
+    let ftype = fractal_type.type_id();
+    let use_perturbation = use_f64 && (ftype == 0 || ftype == 1);
+
+    let orbit_buffer = if use_perturbation {
+        let center_x = uniforms.center[0] as f64 + uniforms.center_lo_x as f64;
+        let center_y = uniforms.center[1] as f64 + uniforms.center_lo_y as f64;
+        let orbit_data = if ftype == 0 {
+            compute_reference_orbit(center_x, center_y, uniforms.max_iter).0
+        } else {
+            compute_reference_orbit_julia(
+                center_x, center_y,
+                uniforms.c_real as f64, uniforms.c_imag as f64,
+                uniforms.max_iter,
+            ).0
+        };
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Export Orbit Buffer"),
+            size: (orbit_data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buf, 0, bytemuck::cast_slice(&orbit_data));
+        Some(buf)
+    } else {
+        None
+    };
+
+    // Build bind group
+    let mut layout_entries = vec![
+        wgpu::BindGroupLayoutEntry {
+            binding: 0, visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1, visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 },
+            count: None,
+        },
+    ];
+    if use_perturbation {
+        layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 2, visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        });
+    }
+
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Export BGL"), entries: &layout_entries,
+    });
+
+    let mut bg_entries = vec![
+        wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&texture_view) },
+    ];
+    if let Some(ref ob) = orbit_buffer {
+        bg_entries.push(wgpu::BindGroupEntry { binding: 2, resource: ob.as_entire_binding() });
+    }
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Export BG"), layout: &bind_group_layout, entries: &bg_entries,
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Export PL"), bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
+    });
+
+    let shader_source = if use_f64 { fractal_type.shader_source_f64() } else { fractal_type.shader_source() };
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Export Shader"), source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+    });
+
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Export Pipeline"), layout: Some(&pipeline_layout),
+        module: &shader, entry_point: "main", compilation_options: Default::default(), cache: None,
+    });
+
+    // Dispatch and copy to readback buffer
+    let bytes_per_pixel = 4u32;
+    let unpadded_bytes_per_row = width * bytes_per_pixel;
+    let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255;
+    let buffer_size = (padded_bytes_per_row * height) as u64;
+
+    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Export Output Buffer"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Export Encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Export Compute Pass"), timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups((width + 15) / 16, (height + 15) / 16, 1);
+    }
+
+    encoder.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: &storage_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer { buffer: &output_buffer, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded_bytes_per_row), rows_per_image: Some(height) } },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
+
+    queue.submit(std::iter::once(encoder.finish()));
+
+    // Async readback — spawn_local so we don't block the JS event loop
+    let filename = filename.to_string();
+    let buffer_slice = output_buffer.slice(..);
+    buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
+
+    wasm_bindgen_futures::spawn_local(async move {
+        // Wait for the GPU to finish by yielding to the event loop
+        // The map_async callback will fire during a microtask checkpoint
+        loop {
+            if output_buffer.size() > 0 {
+                // Try to get mapped range — if mapping is done this succeeds
+                let mapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    output_buffer.slice(..).get_mapped_range()
+                }));
+                match mapped {
+                    Ok(data) => {
+                        let mut pixels = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
+                        for row in 0..height {
+                            let start = (row * padded_bytes_per_row) as usize;
+                            let end = start + unpadded_bytes_per_row as usize;
+                            pixels.extend_from_slice(&data[start..end]);
+                        }
+                        drop(data);
+                        output_buffer.unmap();
+
+                        // Encode PNG
+                        let img: image::RgbaImage = match image::ImageBuffer::from_raw(width, height, pixels) {
+                            Some(img) => img,
+                            None => {
+                                log::error!("Failed to create image from pixel data");
+                                return;
+                            }
+                        };
+                        let mut png_data: Vec<u8> = Vec::new();
+                        let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
+                        use image::ImageEncoder;
+                        if let Err(e) = encoder.write_image(&img, width, height, image::ExtendedColorType::Rgba8) {
+                            log::error!("Failed to encode PNG: {}", e);
+                            return;
+                        }
+
+                        match trigger_browser_download(&filename, &png_data, "image/png") {
+                            Ok(()) => log::info!("PNG download triggered: {} ({}x{})", filename, width, height),
+                            Err(e) => log::error!("Download failed: {}", e),
+                        }
+                        return;
+                    }
+                    Err(_) => {
+                        // Not mapped yet, yield and retry
+                        gloo_timers_sleep(50).await;
+                    }
+                }
+            }
+        }
+    });
+
+    log::info!("Export started (async)...");
     Ok(())
+}
+
+/// Simple async sleep for wasm using a JS setTimeout promise
+#[cfg(target_arch = "wasm32")]
+async fn gloo_timers_sleep(ms: u32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = web_sys::window().unwrap().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 /// Trigger a file download in the browser via Blob + anchor click
