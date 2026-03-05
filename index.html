@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fractal Explorer</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+        }
+        canvas {
+            width: 100% !important;
+            height: 100% !important;
+            display: block !important;
+        }
+    </style>
+    
+<script type="module">
+import init, * as bindings from '/fractal-explorer-6e0dcae476d07d55.js';
+const wasm = await init({ module_or_path: '/fractal-explorer-6e0dcae476d07d55_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+<link rel="modulepreload" href="/fractal-explorer-6e0dcae476d07d55.js" crossorigin="anonymous" integrity="sha384-/6xlfcJ436RVTX2FWWGcFCf4kjuvDvB3a9wtSDyQSfIA0rk9YrYOO0KGQ45xYYwB"><link rel="preload" href="/fractal-explorer-6e0dcae476d07d55_bg.wasm" crossorigin="anonymous" integrity="sha384-nVTdIq8k97fXjATUxlHqRp0w4dRz5brbyHRb5K7hKWsr3WRd8S9mciioERgb7QTJ" as="fetch" type="application/wasm"></head>
+<body>
+<script>
+// Workaround: wgpu 22 sends maxInterStageShaderComponents which was
+// removed from the WebGPU spec (Chrome 130+). Strip it before the call.
+if (typeof GPUAdapter !== "undefined") {
+    const orig = GPUAdapter.prototype.requestDevice;
+    GPUAdapter.prototype.requestDevice = function(desc) {
+        if (desc && desc.requiredLimits) {
+            delete desc.requiredLimits.maxInterStageShaderComponents;
+        }
+        return orig.call(this, desc);
+    };
+}
+</script>
+</body>
+</html>
