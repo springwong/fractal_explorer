@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Fractal Explorer</title>
     <style>
         html, body {
@@ -17,12 +17,13 @@
             width: 100% !important;
             height: 100% !important;
             display: block !important;
+            touch-action: none;
         }
     </style>
     
 <script type="module">
-import init, * as bindings from '/fractal_explorer/fractal-explorer-51a2b4f3f24b1ae3.js';
-const wasm = await init({ module_or_path: '/fractal_explorer/fractal-explorer-51a2b4f3f24b1ae3_bg.wasm' });
+import init, * as bindings from '/fractal_explorer/fractal-explorer-e974cf68adc25dfc.js';
+const wasm = await init({ module_or_path: '/fractal_explorer/fractal-explorer-e974cf68adc25dfc_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -31,7 +32,7 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-<link rel="modulepreload" href="/fractal_explorer/fractal-explorer-51a2b4f3f24b1ae3.js" crossorigin="anonymous" integrity="sha384-DwYhwP77twZpm0klatDpTFKOz+5AD9ex9/0lLcYRF5kKNHFPHETeurNkgdF2lR+T"><link rel="preload" href="/fractal_explorer/fractal-explorer-51a2b4f3f24b1ae3_bg.wasm" crossorigin="anonymous" integrity="sha384-aSv9TuNkcPFLI7RxsyxBT+7CpICUxXMVyH4nu2vm0Fr2zXvr/uH+RHURj7vZl77W" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/fractal_explorer/fractal-explorer-e974cf68adc25dfc.js" crossorigin="anonymous" integrity="sha384-DwYhwP77twZpm0klatDpTFKOz+5AD9ex9/0lLcYRF5kKNHFPHETeurNkgdF2lR+T"><link rel="preload" href="/fractal_explorer/fractal-explorer-e974cf68adc25dfc_bg.wasm" crossorigin="anonymous" integrity="sha384-b6MoTQ+BdGzSLrVcfE4eKmhzja/hUPZXFzX8AWZQGUkEgl9tDL8pHZ6D40o5CTqI" as="fetch" type="application/wasm"></head>
 <body>
 <script>
 // Workaround: wgpu 22 sends maxInterStageShaderComponents which was
