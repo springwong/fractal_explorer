@@ -79,6 +79,7 @@ struct App<'window> {
     pending_export: Option<ExportResolution>,
     pending_record: Option<VideoSettings>,
     pending_resize_canvas: bool,
+    resize_countdown: u32, // frames to wait before auto-resize on wasm
     recording_state: RecordingState,
     last_uniforms: FractalUniforms,
 
@@ -123,6 +124,7 @@ impl<'window> App<'window> {
             pending_export: None,
             pending_record: None,
             pending_resize_canvas: false,
+            resize_countdown: 0,
             recording_state: RecordingState::default(),
             last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0, 0.0),
             buddhabrot_seed: 0,
@@ -226,33 +228,16 @@ impl<'window> App<'window> {
             return;
         }
 
-        // On wasm, the canvas CSS layout may settle after GPU init (e.g. mobile
-        // first load). Read the actual CSS layout size from the canvas element
-        // (clientWidth/Height) rather than window.inner_size() which may return
-        // stale values. If it differs from the surface, trigger a resize.
+        // On wasm, auto-resize after GPU init. The countdown starts when
+        // GPU becomes ready and fires the resize after ~60 frames (~1s),
+        // giving the mobile browser time to settle its viewport.
         #[cfg(target_arch = "wasm32")]
         {
-            let needs_resize = if let (Some(ref window), Some(ref gpu_ctx)) = (&self.window, &self.gpu) {
-                use winit::platform::web::WindowExtWebSys;
-                let canvas = window.canvas().unwrap();
-                let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
-                let pixel_w = (canvas.client_width() as f64 * dpr) as u32;
-                let pixel_h = (canvas.client_height() as f64 * dpr) as u32;
-                if pixel_w > 0 && pixel_h > 0
-                    && (gpu_ctx.surface_config.width != pixel_w || gpu_ctx.surface_config.height != pixel_h)
-                {
-                    // Also update the canvas pixel buffer to match
-                    canvas.set_width(pixel_w);
-                    canvas.set_height(pixel_h);
-                    Some(winit::dpi::PhysicalSize::new(pixel_w, pixel_h))
-                } else {
-                    None
+            if self.resize_countdown > 0 {
+                self.resize_countdown -= 1;
+                if self.resize_countdown == 0 {
+                    self.pending_resize_canvas = true;
                 }
-            } else {
-                None
-            };
-            if let Some(new_size) = needs_resize {
-                self.resize(new_size);
             }
         }
 
@@ -1222,6 +1207,8 @@ impl ApplicationHandler for App<'_> {
                 app.compute = Some(compute);
                 app.render = Some(render);
                 log::info!("Application initialized successfully (wasm), size: {}x{}", size.width, size.height);
+                // Auto-resize after ~1s to fix mobile viewport height
+                app.resize_countdown = 60;
                 // Trigger first redraw now that GPU is ready
                 window.request_redraw();
             });
