@@ -33,6 +33,12 @@ function __wbg_get_imports() {
             const ret = arg0 === undefined;
             return ret;
         },
+        __wbg___wbindgen_number_get_34bb9d9dcfa21373: function(arg0, arg1) {
+            const obj = arg1;
+            const ret = typeof(obj) === 'number' ? obj : undefined;
+            getDataViewMemory0().setFloat64(arg0 + 8 * 1, isLikeNone(ret) ? 0 : ret, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, !isLikeNone(ret), true);
+        },
         __wbg___wbindgen_string_get_395e606bd0ee4427: function(arg0, arg1) {
             const obj = arg1;
             const ret = typeof(obj) === 'string' ? obj : undefined;
@@ -74,6 +80,14 @@ function __wbg_get_imports() {
         },
         __wbg_appendChild_8cb157b6ec5612a6: function() { return handleError(function (arg0, arg1) {
             const ret = arg0.appendChild(arg1);
+            return ret;
+        }, arguments); },
+        __wbg_availHeight_8374eb90b8f6cba6: function() { return handleError(function (arg0) {
+            const ret = arg0.availHeight;
+            return ret;
+        }, arguments); },
+        __wbg_availWidth_8d75b3ebdc29cdff: function() { return handleError(function (arg0) {
+            const ret = arg0.availWidth;
             return ret;
         }, arguments); },
         __wbg_beginComputePass_5d05bddfd3eb7ba4: function(arg0, arg1) {
@@ -139,6 +153,14 @@ function __wbg_get_imports() {
         },
         __wbg_click_14a2543ed4ab7b86: function(arg0) {
             arg0.click();
+        },
+        __wbg_clientHeight_3d6e452054fdbc3b: function(arg0) {
+            const ret = arg0.clientHeight;
+            return ret;
+        },
+        __wbg_clientWidth_33c7e9c1bcdf4a7e: function(arg0) {
+            const ret = arg0.clientWidth;
+            return ret;
         },
         __wbg_close_ab55423854e61546: function(arg0) {
             arg0.close();
@@ -466,6 +488,14 @@ function __wbg_get_imports() {
             const ret = arg0.inlineSize;
             return ret;
         },
+        __wbg_innerHeight_ba245c3eff70b2a1: function() { return handleError(function (arg0) {
+            const ret = arg0.innerHeight;
+            return ret;
+        }, arguments); },
+        __wbg_innerWidth_e6af2d66d3b06991: function() { return handleError(function (arg0) {
+            const ret = arg0.innerWidth;
+            return ret;
+        }, arguments); },
         __wbg_instanceof_GpuAdapter_8825bf3533b2dc81: function(arg0) {
             let result;
             try {
@@ -1023,6 +1053,10 @@ function __wbg_get_imports() {
             const ret = arg0.scheduler;
             return ret;
         },
+        __wbg_screen_596be4cb34f5852d: function() { return handleError(function (arg0) {
+            const ret = arg0.screen;
+            return ret;
+        }, arguments); },
         __wbg_setAttribute_f20d3b966749ab64: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             arg0.setAttribute(getStringFromWasm0(arg1, arg2), getStringFromWasm0(arg3, arg4));
         }, arguments); },
