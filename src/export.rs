@@ -62,7 +62,7 @@ fn render_to_pixels(
     let export_pixel_step_y = (-1.0 / (zoom_f64 * height as f64)) as f32;
 
     // Create export uniforms with correct aspect ratio for target resolution
-    let export_uniforms = FractalUniforms::new(
+    let mut export_uniforms = FractalUniforms::new(
         uniforms.center,
         uniforms.zoom,
         aspect_ratio,
@@ -78,6 +78,7 @@ fn render_to_pixels(
         uniforms.ref_escape_iter,
         uniforms.rotation,
     );
+    fractal_type.prepare_uniforms(&mut export_uniforms, width, height);
 
     // Create uniform buffer
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -397,7 +398,7 @@ pub fn export_png(
     let export_pixel_step_x = (1.0 / (zoom_f64 * height as f64)) as f32;
     let export_pixel_step_y = (-1.0 / (zoom_f64 * height as f64)) as f32;
 
-    let export_uniforms = FractalUniforms::new(
+    let mut export_uniforms = FractalUniforms::new(
         uniforms.center,
         uniforms.zoom,
         aspect_ratio,
@@ -413,6 +414,7 @@ pub fn export_png(
         uniforms.ref_escape_iter,
         uniforms.rotation,
     );
+    fractal_type.prepare_uniforms(&mut export_uniforms, width, height);
 
     // Create GPU resources
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -987,7 +989,7 @@ pub fn record_video(
         };
 
         // Build uniforms for this frame
-        let frame_uniforms = FractalUniforms::new(
+        let mut frame_uniforms = FractalUniforms::new(
             [center_x_hi, center_y_hi],
             zoom_hi,
             aspect_ratio,
@@ -1003,6 +1005,7 @@ pub fn record_video(
             ref_escape_iter,
             base_uniforms.rotation,
         );
+        fractal_type.prepare_uniforms(&mut frame_uniforms, width, height);
         queue.write_buffer(&uniform_buffer, 0, bytemuck::bytes_of(&frame_uniforms));
 
         // Dispatch compute shader

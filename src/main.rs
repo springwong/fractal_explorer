@@ -438,6 +438,8 @@ impl<'window> App<'window> {
             uniforms._pad2[2] = compute.accum_sample_count;
         }
 
+        self.current_fractal.prepare_uniforms(&mut uniforms, gpu.surface_config.width, gpu.surface_config.height);
+
         compute.update_uniforms(&gpu.queue, &uniforms);
         self.last_uniforms = uniforms;
 

@@ -16,6 +16,7 @@ pub use nova::Nova;
 pub use golden_silver::GoldenSilver;
 
 use crate::camera::ViewBounds;
+use crate::renderer::FractalUniforms;
 use glam::{DVec2, Vec2};
 
 /// Trait for fractal types
@@ -145,9 +146,20 @@ impl FractalType {
             FractalType::Nova { .. } => ViewBounds::new(-3.0, -3.0, 3.0, 3.0, 0.2, EMULATED_DOUBLE),
             // The pattern is drawn out to |x|, |y| < 199 and is black beyond. Let the view
             // roam all of it, with at most a thin black strip showing past the edge.
+            // Located in f64 on the CPU (see golden_silver::apply_view); out at the edge
+            // f64 leaves about this much zoom
             FractalType::GoldenSilver => {
                 ViewBounds::new(-199.0, -199.0, 199.0, 199.0, 0.0022, EMULATED_DOUBLE).with_edge_margin(0.08)
             }
+        }
+    }
+
+    /// Fill any fractal-specific uniform slots for the view the uniforms describe,
+    /// rendered at `width` x `height`. Call after building the uniforms, wherever
+    /// they are built (live view, PNG export, video frames).
+    pub fn prepare_uniforms(&self, uniforms: &mut FractalUniforms, width: u32, height: u32) {
+        if let FractalType::GoldenSilver = self {
+            golden_silver::apply_view(uniforms, width, height);
         }
     }
 
