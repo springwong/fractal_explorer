@@ -89,9 +89,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let rel = vec2<f32>(zx, zy) - uniforms.center;
         let cos_r = cos(uniforms.rotation);
         let sin_r = sin(uniforms.rotation);
+        // Inverse of the pixel -> plane mapping used by the other shaders
+        // (same rotation sense, so camera pan/zoom maths applies here too)
         let rotated = vec2<f32>(
-            rel.x * cos_r + rel.y * sin_r,
-            -rel.x * sin_r + rel.y * cos_r,
+            rel.x * cos_r - rel.y * sin_r,
+            rel.x * sin_r + rel.y * cos_r,
         );
         let screen = rotated * uniforms.zoom * vec2<f32>(1.0, -1.0) * f32(height) + vec2<f32>(f32(width), f32(height)) / 2.0;
 

@@ -172,3 +172,38 @@ impl FractalType {
         matches!(self, FractalType::Buddhabrot)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use wgpu::naga;
+
+    /// Every shipped shader must parse and validate.
+    #[test]
+    fn all_shaders_are_valid_wgsl() {
+        let shaders = [
+            ("mandelbrot", include_str!("../shaders/mandelbrot.wgsl")),
+            ("mandelbrot_f64", include_str!("../shaders/mandelbrot_f64.wgsl")),
+            ("julia", include_str!("../shaders/julia.wgsl")),
+            ("julia_f64", include_str!("../shaders/julia_f64.wgsl")),
+            ("burning_ship", include_str!("../shaders/burning_ship.wgsl")),
+            ("burning_ship_f64", include_str!("../shaders/burning_ship_f64.wgsl")),
+            ("tricorn", include_str!("../shaders/tricorn.wgsl")),
+            ("tricorn_f64", include_str!("../shaders/tricorn_f64.wgsl")),
+            ("nova", include_str!("../shaders/nova.wgsl")),
+            ("nova_f64", include_str!("../shaders/nova_f64.wgsl")),
+            ("buddhabrot", include_str!("../shaders/buddhabrot.wgsl")),
+            ("buddhabrot_tonemap", include_str!("../shaders/buddhabrot_tonemap.wgsl")),
+            ("fullscreen", include_str!("../shaders/fullscreen.wgsl")),
+        ];
+        for (name, source) in shaders {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: validation failed: {e:?}"));
+        }
+    }
+}
