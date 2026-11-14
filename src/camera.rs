@@ -11,6 +11,10 @@ pub struct ViewBounds {
     pub min_zoom: f64,
     /// Deepest zoom-in allowed (beyond this the precision runs out)
     pub max_zoom: f64,
+    /// None: the view centre stays inside the box.
+    /// Some(m): the box is the edge of the picture, and the whole view stays inside it
+    /// except for a strip of at most `m` x view size showing beyond each edge.
+    pub edge_margin: Option<f64>,
 }
 
 impl ViewBounds {
@@ -20,11 +24,19 @@ impl ViewBounds {
         max: DVec2::splat(f64::INFINITY),
         min_zoom: 0.0,
         max_zoom: f64::INFINITY,
+        edge_margin: None,
     };
 
     /// Bounds with centre limited to the box (x0, y0)..(x1, y1)
     pub fn new(x0: f64, y0: f64, x1: f64, y1: f64, min_zoom: f64, max_zoom: f64) -> Self {
-        Self { min: DVec2::new(x0, y0), max: DVec2::new(x1, y1), min_zoom, max_zoom }
+        Self { min: DVec2::new(x0, y0), max: DVec2::new(x1, y1), min_zoom, max_zoom, edge_margin: None }
+    }
+
+    /// Treat the box as the picture's edge and let only a strip of `margin` x view size
+    /// show beyond it.
+    pub fn with_edge_margin(mut self, margin: f64) -> Self {
+        self.edge_margin = Some(margin);
+        self
     }
 }
 
@@ -98,8 +110,33 @@ impl Camera {
 
     /// Pull centre and zoom back inside `bounds`
     pub fn clamp_to_bounds(&mut self) {
-        self.center = self.center.clamp(self.bounds.min, self.bounds.max);
         self.zoom = self.zoom.clamp(self.bounds.min_zoom, self.bounds.max_zoom);
+
+        let Some(margin) = self.bounds.edge_margin else {
+            self.center = self.center.clamp(self.bounds.min, self.bounds.max);
+            return;
+        };
+
+        // Half-size of the view's bounding box in plane units (allowing for rotation)
+        let half_h = 0.5 / self.zoom;
+        let half_w = half_h * self.screen_size.x as f64 / self.screen_size.y as f64;
+        let (sin_r, cos_r) = self.rotation.sin_cos();
+        let half = DVec2::new(
+            half_w * cos_r.abs() + half_h * sin_r.abs(),
+            half_w * sin_r.abs() + half_h * cos_r.abs(),
+        );
+        // The view may stick out past each edge by `margin` of its own size
+        let inset = half * (1.0 - 2.0 * margin);
+        let (lo, hi) = (self.bounds.min + inset, self.bounds.max - inset);
+        let mid = (self.bounds.min + self.bounds.max) / 2.0;
+        for axis in 0..2 {
+            // View larger than the picture on this axis: keep it centred
+            self.center[axis] = if lo[axis] > hi[axis] {
+                mid[axis]
+            } else {
+                self.center[axis].clamp(lo[axis], hi[axis])
+            };
+        }
     }
 
     /// Pan camera by screen delta (in pixels); the view follows the drag.
@@ -212,6 +249,25 @@ mod tests {
         cam.zoom = 1e30;
         cam.set_bounds(cam.bounds);
         assert_eq!((cam.center, cam.zoom), (DVec2::new(1.0, -1.0), 100.0));
+    }
+
+    #[test]
+    fn edge_margin_keeps_view_on_the_picture() {
+        let mut cam = Camera::new(UVec2::new(2000, 1000));
+        cam.center = DVec2::ZERO;
+        cam.zoom = 1.0; // view is 2 wide, 1 tall
+        cam.set_bounds(ViewBounds::new(-10.0, -10.0, 10.0, 10.0, 0.01, 1e6).with_edge_margin(0.1));
+
+        // Drag as far right/up as possible: 10% of the view shows past the edge
+        for _ in 0..100 {
+            cam.pan(Vec2::new(-5000.0, 5000.0));
+        }
+        assert!(close(cam.center, DVec2::new(10.0 - 0.8, 10.0 - 0.4)), "{}", cam.center);
+
+        // Zoomed out beyond the picture: it stays centred
+        cam.zoom = 0.02; // view 100 x 50, picture 20 x 20
+        cam.pan(Vec2::new(300.0, -200.0));
+        assert!(close(cam.center, DVec2::ZERO), "{}", cam.center);
     }
 
     #[test]

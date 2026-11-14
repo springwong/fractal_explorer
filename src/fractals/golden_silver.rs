@@ -13,7 +13,8 @@ impl Fractal for GoldenSilver {
     }
 
     fn shader_source_f64(&self) -> &'static str {
-        include_str!("../shaders/golden_silver_f64.wgsl")
+        // One shader for every zoom level: it is already double precision
+        self.shader_source()
     }
 
     fn type_id(&self) -> u32 {
@@ -55,7 +56,6 @@ mod tests {
     #[test]
     fn shaders_are_valid_wgsl() {
         validate(GoldenSilver.shader_source());
-        validate(GoldenSilver.shader_source_f64());
     }
 
     /// CPU mirror of the shader's level test.
