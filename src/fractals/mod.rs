@@ -5,6 +5,7 @@ mod burning_ship;
 mod tricorn;
 mod buddhabrot;
 mod nova;
+mod golden_silver;
 
 pub use mandelbrot::Mandelbrot;
 pub use julia::Julia;
@@ -12,7 +13,10 @@ pub use burning_ship::BurningShip;
 pub use tricorn::Tricorn;
 pub use buddhabrot::Buddhabrot;
 pub use nova::Nova;
+pub use golden_silver::GoldenSilver;
 
+use crate::camera::ViewBounds;
+use crate::renderer::FractalUniforms;
 use glam::{DVec2, Vec2};
 
 /// Trait for fractal types
@@ -64,6 +68,7 @@ pub enum FractalType {
     Tricorn,
     Buddhabrot,
     Nova { c: Vec2 },
+    GoldenSilver,
 }
 
 impl FractalType {
@@ -76,6 +81,7 @@ impl FractalType {
             FractalType::Tricorn => 3,
             FractalType::Buddhabrot => 4,
             FractalType::Nova { .. } => 5,
+            FractalType::GoldenSilver => 6,
         }
     }
 
@@ -94,6 +100,7 @@ impl FractalType {
                 c_real: c.x,
                 c_imag: c.y,
             },
+            FractalType::GoldenSilver => FractalParams::default(),
         }
     }
 
@@ -106,6 +113,7 @@ impl FractalType {
             FractalType::Tricorn => Tricorn.default_center(),
             FractalType::Buddhabrot => Buddhabrot.default_center(),
             FractalType::Nova { .. } => Nova::default().default_center(),
+            FractalType::GoldenSilver => GoldenSilver.default_center(),
         }
     }
 
@@ -118,6 +126,40 @@ impl FractalType {
             FractalType::Tricorn => Tricorn.default_zoom(),
             FractalType::Buddhabrot => Buddhabrot.default_zoom(),
             FractalType::Nova { .. } => Nova::default().default_zoom(),
+            FractalType::GoldenSilver => GoldenSilver.default_zoom(),
+        }
+    }
+
+    /// Where the camera may go for this fractal: the centre stays inside a box
+    /// around the interesting region and zoom stays within what can be shown.
+    pub fn view_bounds(&self) -> ViewBounds {
+        // Deepest useful zoom: f64 camera with perturbation, emulated double, or plain f32
+        const PERTURBATION: f64 = 1e13;
+        const EMULATED_DOUBLE: f64 = 1e10;
+        match self {
+            FractalType::Mandelbrot => ViewBounds::new(-2.5, -1.5, 1.0, 1.5, 0.2, PERTURBATION),
+            FractalType::Julia { .. } => ViewBounds::new(-2.0, -2.0, 2.0, 2.0, 0.2, PERTURBATION),
+            FractalType::BurningShip => ViewBounds::new(-2.5, -2.0, 1.5, 1.0, 0.2, EMULATED_DOUBLE),
+            FractalType::Tricorn => ViewBounds::new(-2.5, -2.0, 1.5, 2.0, 0.2, EMULATED_DOUBLE),
+            // Samples thin out quadratically with zoom, so deep views stay empty
+            FractalType::Buddhabrot => ViewBounds::new(-2.5, -1.5, 1.0, 1.5, 0.2, 200.0),
+            FractalType::Nova { .. } => ViewBounds::new(-3.0, -3.0, 3.0, 3.0, 0.2, EMULATED_DOUBLE),
+            // The pattern is drawn out to |x|, |y| < 199 and is black beyond. Let the view
+            // roam all of it, with at most a thin black strip showing past the edge.
+            // Located in f64 on the CPU (see golden_silver::apply_view); out at the edge
+            // f64 leaves about this much zoom
+            FractalType::GoldenSilver => {
+                ViewBounds::new(-199.0, -199.0, 199.0, 199.0, 0.0022, EMULATED_DOUBLE).with_edge_margin(0.08)
+            }
+        }
+    }
+
+    /// Fill any fractal-specific uniform slots for the view the uniforms describe,
+    /// rendered at `width` x `height`. Call after building the uniforms, wherever
+    /// they are built (live view, PNG export, video frames).
+    pub fn prepare_uniforms(&self, uniforms: &mut FractalUniforms, width: u32, height: u32) {
+        if let FractalType::GoldenSilver = self {
+            golden_silver::apply_view(uniforms, width, height);
         }
     }
 
@@ -130,6 +172,7 @@ impl FractalType {
             FractalType::Tricorn => Tricorn.shader_source(),
             FractalType::Buddhabrot => Buddhabrot.shader_source(),
             FractalType::Nova { .. } => Nova::default().shader_source(),
+            FractalType::GoldenSilver => GoldenSilver.shader_source(),
         }
     }
 
@@ -142,6 +185,7 @@ impl FractalType {
             FractalType::Tricorn => Tricorn.shader_source_f64(),
             FractalType::Buddhabrot => Buddhabrot.shader_source_f64(),
             FractalType::Nova { .. } => Nova::default().shader_source_f64(),
+            FractalType::GoldenSilver => GoldenSilver.shader_source_f64(),
         }
     }
 
@@ -154,11 +198,68 @@ impl FractalType {
             FractalType::Tricorn => "Tricorn",
             FractalType::Buddhabrot => "Buddhabrot",
             FractalType::Nova { .. } => "Nova Fractal",
+            FractalType::GoldenSilver => "Golden-Silver Gasket",
         }
     }
 
     /// Whether this fractal type uses accumulation buffer rendering
     pub fn is_buddhabrot(&self) -> bool {
         matches!(self, FractalType::Buddhabrot)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::naga;
+
+    /// Each fractal's default view must sit inside its own bounds.
+    #[test]
+    fn default_views_are_inside_bounds() {
+        let all = [
+            FractalType::Mandelbrot,
+            FractalType::Julia { c: Vec2::ZERO },
+            FractalType::BurningShip,
+            FractalType::Tricorn,
+            FractalType::Buddhabrot,
+            FractalType::Nova { c: Vec2::ZERO },
+            FractalType::GoldenSilver,
+        ];
+        for f in all {
+            let b = f.view_bounds();
+            let (c, z) = (f.default_center(), f.default_zoom());
+            assert!(c.cmpge(b.min).all() && c.cmple(b.max).all(), "{}: centre", f.name());
+            assert!(z >= b.min_zoom && z <= b.max_zoom, "{}: zoom", f.name());
+        }
+    }
+
+    /// Every shipped shader must parse and validate.
+    #[test]
+    fn all_shaders_are_valid_wgsl() {
+        let shaders = [
+            ("mandelbrot", include_str!("../shaders/mandelbrot.wgsl")),
+            ("mandelbrot_f64", include_str!("../shaders/mandelbrot_f64.wgsl")),
+            ("julia", include_str!("../shaders/julia.wgsl")),
+            ("julia_f64", include_str!("../shaders/julia_f64.wgsl")),
+            ("burning_ship", include_str!("../shaders/burning_ship.wgsl")),
+            ("burning_ship_f64", include_str!("../shaders/burning_ship_f64.wgsl")),
+            ("tricorn", include_str!("../shaders/tricorn.wgsl")),
+            ("tricorn_f64", include_str!("../shaders/tricorn_f64.wgsl")),
+            ("nova", include_str!("../shaders/nova.wgsl")),
+            ("nova_f64", include_str!("../shaders/nova_f64.wgsl")),
+            ("buddhabrot", include_str!("../shaders/buddhabrot.wgsl")),
+            ("buddhabrot_tonemap", include_str!("../shaders/buddhabrot_tonemap.wgsl")),
+            ("fullscreen", include_str!("../shaders/fullscreen.wgsl")),
+        ];
+        for (name, source) in shaders {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: validation failed: {e:?}"));
+        }
     }
 }

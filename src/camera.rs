@@ -1,5 +1,45 @@
 use glam::{DVec2, UVec2, Vec2};
 
+/// Limits on where the camera may go, so the view never ends up in empty space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewBounds {
+    /// Lowest allowed view centre (x, y)
+    pub min: DVec2,
+    /// Highest allowed view centre (x, y)
+    pub max: DVec2,
+    /// Furthest zoom-out allowed
+    pub min_zoom: f64,
+    /// Deepest zoom-in allowed (beyond this the precision runs out)
+    pub max_zoom: f64,
+    /// None: the view centre stays inside the box.
+    /// Some(m): the box is the edge of the picture, and the whole view stays inside it
+    /// except for a strip of at most `m` x view size showing beyond each edge.
+    pub edge_margin: Option<f64>,
+}
+
+impl ViewBounds {
+    /// No limits at all
+    pub const UNBOUNDED: Self = Self {
+        min: DVec2::splat(f64::NEG_INFINITY),
+        max: DVec2::splat(f64::INFINITY),
+        min_zoom: 0.0,
+        max_zoom: f64::INFINITY,
+        edge_margin: None,
+    };
+
+    /// Bounds with centre limited to the box (x0, y0)..(x1, y1)
+    pub fn new(x0: f64, y0: f64, x1: f64, y1: f64, min_zoom: f64, max_zoom: f64) -> Self {
+        Self { min: DVec2::new(x0, y0), max: DVec2::new(x1, y1), min_zoom, max_zoom, edge_margin: None }
+    }
+
+    /// Treat the box as the picture's edge and let only a strip of `margin` x view size
+    /// show beyond it.
+    pub fn with_edge_margin(mut self, margin: f64) -> Self {
+        self.edge_margin = Some(margin);
+        self
+    }
+}
+
 /// Camera for navigating the complex plane
 /// Uses f64 internally for deep zoom precision, converts to f32 for GPU
 pub struct Camera {
@@ -11,6 +51,8 @@ pub struct Camera {
     pub rotation: f64,
     /// Screen dimensions in pixels
     pub screen_size: UVec2,
+    /// Limits applied to centre and zoom
+    pub bounds: ViewBounds,
 }
 
 impl Camera {
@@ -21,22 +63,26 @@ impl Camera {
             zoom: 1.0,
             rotation: 0.0,
             screen_size,
+            bounds: ViewBounds::UNBOUNDED,
         }
     }
 
-    /// Convert screen coordinates (pixels) to complex plane coordinates
+    /// Convert screen coordinates (pixels) to complex plane coordinates.
+    ///
+    /// Mirrors the shaders: offset from screen centre, normalised by height,
+    /// rotated by `rotation`, scaled by 1/zoom, Y flipped.
     pub fn screen_to_complex(&self, screen_pos: Vec2) -> DVec2 {
-        let aspect = self.screen_size.x as f64 / self.screen_size.y as f64;
+        let size = self.screen_size.as_dvec2();
+        let offset = (screen_pos.as_dvec2() - size / 2.0) / size.y;
+        self.center + self.screen_vec_to_complex(offset)
+    }
 
-        // Convert to normalized device coordinates centered at (0, 0)
-        let ndc = (screen_pos - self.screen_size.as_vec2() / 2.0) / self.screen_size.y as f32;
-
-        // Scale by zoom and aspect ratio, flip Y axis
-        self.center
-            + DVec2::new(
-                ndc.x as f64 * aspect / self.zoom,
-                -ndc.y as f64 / self.zoom,
-            )
+    /// Map a height-normalised screen-space vector to a complex-plane vector
+    /// (rotation, zoom and Y flip; no translation).
+    fn screen_vec_to_complex(&self, v: DVec2) -> DVec2 {
+        let (sin_r, cos_r) = self.rotation.sin_cos();
+        let rotated = DVec2::new(v.x * cos_r - v.y * sin_r, v.x * sin_r + v.y * cos_r);
+        DVec2::new(rotated.x, -rotated.y) / self.zoom
     }
 
     /// Zoom in/out centered at a specific screen position
@@ -45,27 +91,59 @@ impl Camera {
         // Get complex coordinate before zoom
         let complex_pos = self.screen_to_complex(screen_pos);
 
-        // Apply zoom
-        self.zoom *= factor;
+        // Apply zoom, staying inside the allowed range
+        self.zoom = (self.zoom * factor).clamp(self.bounds.min_zoom, self.bounds.max_zoom);
 
         // Get complex coordinate after zoom
         let new_complex = self.screen_to_complex(screen_pos);
 
         // Adjust center to keep the point under cursor stationary
         self.center += complex_pos - new_complex;
+        self.clamp_to_bounds();
     }
 
-    /// Pan camera by screen delta (in pixels)
-    pub fn pan(&mut self, screen_delta: Vec2) {
-        let aspect = self.screen_size.x as f64 / self.screen_size.y as f64;
+    /// Set the limits for the current fractal and pull the view back inside them
+    pub fn set_bounds(&mut self, bounds: ViewBounds) {
+        self.bounds = bounds;
+        self.clamp_to_bounds();
+    }
 
-        // Convert screen delta to complex plane delta
-        let complex_delta = DVec2::new(
-            -screen_delta.x as f64 * aspect / self.zoom / self.screen_size.y as f64,
-            screen_delta.y as f64 / self.zoom / self.screen_size.y as f64,
+    /// Pull centre and zoom back inside `bounds`
+    pub fn clamp_to_bounds(&mut self) {
+        self.zoom = self.zoom.clamp(self.bounds.min_zoom, self.bounds.max_zoom);
+
+        let Some(margin) = self.bounds.edge_margin else {
+            self.center = self.center.clamp(self.bounds.min, self.bounds.max);
+            return;
+        };
+
+        // Half-size of the view's bounding box in plane units (allowing for rotation)
+        let half_h = 0.5 / self.zoom;
+        let half_w = half_h * self.screen_size.x as f64 / self.screen_size.y as f64;
+        let (sin_r, cos_r) = self.rotation.sin_cos();
+        let half = DVec2::new(
+            half_w * cos_r.abs() + half_h * sin_r.abs(),
+            half_w * sin_r.abs() + half_h * cos_r.abs(),
         );
+        // The view may stick out past each edge by `margin` of its own size
+        let inset = half * (1.0 - 2.0 * margin);
+        let (lo, hi) = (self.bounds.min + inset, self.bounds.max - inset);
+        let mid = (self.bounds.min + self.bounds.max) / 2.0;
+        for axis in 0..2 {
+            // View larger than the picture on this axis: keep it centred
+            self.center[axis] = if lo[axis] > hi[axis] {
+                mid[axis]
+            } else {
+                self.center[axis].clamp(lo[axis], hi[axis])
+            };
+        }
+    }
 
-        self.center += complex_delta;
+    /// Pan camera by screen delta (in pixels); the view follows the drag.
+    pub fn pan(&mut self, screen_delta: Vec2) {
+        let delta = screen_delta.as_dvec2() / self.screen_size.y as f64;
+        self.center -= self.screen_vec_to_complex(delta);
+        self.clamp_to_bounds();
     }
 
     /// Update screen size (called on window resize)
@@ -83,5 +161,125 @@ impl Camera {
     /// Get current aspect ratio
     pub fn aspect_ratio(&self) -> f32 {
         self.screen_size.x as f32 / self.screen_size.y as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pixel -> plane mapping exactly as the compute shaders write it.
+    fn shader_map(cam: &Camera, px: f64, py: f64) -> DVec2 {
+        let (w, h) = (cam.screen_size.x as f64, cam.screen_size.y as f64);
+        let (ux, uy) = ((px - w / 2.0) / h, (py - h / 2.0) / h);
+        let (c, s) = (cam.rotation.cos(), cam.rotation.sin());
+        let (rx, ry) = (ux * c - uy * s, ux * s + uy * c);
+        DVec2::new(cam.center.x + rx / cam.zoom, cam.center.y - ry / cam.zoom)
+    }
+
+    fn cameras() -> Vec<Camera> {
+        let mut out = Vec::new();
+        for size in [UVec2::new(1920, 1080), UVec2::new(1080, 2340), UVec2::new(800, 800)] {
+            for rotation in [0.0, 0.7, -2.1] {
+                let mut cam = Camera::new(size);
+                cam.center = DVec2::new(-0.3, 0.2);
+                cam.zoom = 3.5;
+                cam.rotation = rotation;
+                out.push(cam);
+            }
+        }
+        out
+    }
+
+    fn close(a: DVec2, b: DVec2) -> bool {
+        (a - b).length() < 1e-9
+    }
+
+    #[test]
+    fn screen_to_complex_matches_shader() {
+        for cam in cameras() {
+            let (w, h) = (cam.screen_size.x as f32, cam.screen_size.y as f32);
+            for pos in [Vec2::ZERO, Vec2::new(w, h), Vec2::new(w, 0.0), Vec2::new(w * 0.25, h * 0.75)] {
+                let got = cam.screen_to_complex(pos);
+                let want = shader_map(&cam, pos.x as f64, pos.y as f64);
+                assert!(close(got, want), "{:?} rot {}: {got} vs {want}", cam.screen_size, cam.rotation);
+            }
+        }
+    }
+
+    #[test]
+    fn zoom_keeps_point_under_cursor() {
+        for mut cam in cameras() {
+            let pos = Vec2::new(cam.screen_size.x as f32 * 0.9, cam.screen_size.y as f32 * 0.2);
+            let before = shader_map(&cam, pos.x as f64, pos.y as f64);
+            cam.zoom_at(pos, 1.7);
+            let after = shader_map(&cam, pos.x as f64, pos.y as f64);
+            assert!(close(before, after), "{:?} rot {}", cam.screen_size, cam.rotation);
+        }
+    }
+
+    #[test]
+    fn bounds_stop_pan_and_zoom() {
+        let mut cam = Camera::new(UVec2::new(1920, 1080));
+        cam.set_bounds(ViewBounds::new(-2.0, -1.0, 1.0, 1.0, 0.25, 100.0));
+
+        // Dragging far away stops at the edge of the box
+        for _ in 0..200 {
+            cam.pan(Vec2::new(-500.0, 300.0));
+        }
+        assert_eq!(cam.center, DVec2::new(1.0, 1.0));
+
+        // Zooming stops at both limits, and at the limit the view no longer drifts
+        let corner = Vec2::new(100.0, 100.0);
+        for _ in 0..200 {
+            cam.zoom_at(corner, 1.5);
+        }
+        assert_eq!(cam.zoom, 100.0);
+        let settled = cam.center;
+        cam.zoom_at(corner, 1.5);
+        assert!(close(cam.center, settled));
+
+        for _ in 0..200 {
+            cam.zoom_at(corner, 0.5);
+        }
+        assert_eq!(cam.zoom, 0.25);
+
+        // A view that starts outside is pulled back in
+        cam.center = DVec2::new(50.0, -50.0);
+        cam.zoom = 1e30;
+        cam.set_bounds(cam.bounds);
+        assert_eq!((cam.center, cam.zoom), (DVec2::new(1.0, -1.0), 100.0));
+    }
+
+    #[test]
+    fn edge_margin_keeps_view_on_the_picture() {
+        let mut cam = Camera::new(UVec2::new(2000, 1000));
+        cam.center = DVec2::ZERO;
+        cam.zoom = 1.0; // view is 2 wide, 1 tall
+        cam.set_bounds(ViewBounds::new(-10.0, -10.0, 10.0, 10.0, 0.01, 1e6).with_edge_margin(0.1));
+
+        // Drag as far right/up as possible: 10% of the view shows past the edge
+        for _ in 0..100 {
+            cam.pan(Vec2::new(-5000.0, 5000.0));
+        }
+        assert!(close(cam.center, DVec2::new(10.0 - 0.8, 10.0 - 0.4)), "{}", cam.center);
+
+        // Zoomed out beyond the picture: it stays centred
+        cam.zoom = 0.02; // view 100 x 50, picture 20 x 20
+        cam.pan(Vec2::new(300.0, -200.0));
+        assert!(close(cam.center, DVec2::ZERO), "{}", cam.center);
+    }
+
+    #[test]
+    fn pan_drags_content_with_cursor() {
+        for mut cam in cameras() {
+            let start = Vec2::new(300.0, 400.0);
+            let delta = Vec2::new(120.0, -45.0);
+            let grabbed = shader_map(&cam, start.x as f64, start.y as f64);
+            cam.pan(delta);
+            let end = start + delta;
+            let now_under = shader_map(&cam, end.x as f64, end.y as f64);
+            assert!(close(grabbed, now_under), "{:?} rot {}", cam.screen_size, cam.rotation);
+        }
     }
 }

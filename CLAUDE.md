@@ -245,6 +245,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 | `3` | Burning Ship |
 | `4` | Tricorn |
 | `5` | Buddhabrot |
+| `6` | Nova Fractal |
+| `7` | Golden-Silver Gasket（黃金進位版 Sierpinski，維數 ln(1+√2)/ln φ ≈ 1.8316） |
 | `+` / `-` | 增減最大迭代次數 (+/- 64) |
 | `R` | 重置視圖 |
 | `P` | 截圖 PNG (1080p) |
