@@ -4,7 +4,7 @@ A real-time interactive fractal explorer built with Rust, wgpu, and egui. Runs n
 
 ## Features
 
-- 6 fractal types: Mandelbrot, Julia, Burning Ship, Tricorn, Buddhabrot, Nova
+- 7 fractal types: Mandelbrot, Julia, Burning Ship, Tricorn, Buddhabrot, Nova, Golden-Silver Gasket
 - GPU-accelerated rendering via compute shaders (WGSL)
 - f64 emulated double precision for deep zoom
 - Perturbation theory for Mandelbrot/Julia at extreme zoom levels
@@ -103,7 +103,7 @@ trunk serve --public-url /
 
 | Key | Action |
 |-----|--------|
-| `1`-`6` | Switch fractal type |
+| `1`-`7` | Switch fractal type |
 | `+` / `-` | Increase / decrease max iterations |
 | `R` | Reset view |
 | `P` | Export PNG (1080p) |

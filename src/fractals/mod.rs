@@ -5,6 +5,7 @@ mod burning_ship;
 mod tricorn;
 mod buddhabrot;
 mod nova;
+mod golden_silver;
 
 pub use mandelbrot::Mandelbrot;
 pub use julia::Julia;
@@ -12,6 +13,7 @@ pub use burning_ship::BurningShip;
 pub use tricorn::Tricorn;
 pub use buddhabrot::Buddhabrot;
 pub use nova::Nova;
+pub use golden_silver::GoldenSilver;
 
 use glam::{DVec2, Vec2};
 
@@ -64,6 +66,7 @@ pub enum FractalType {
     Tricorn,
     Buddhabrot,
     Nova { c: Vec2 },
+    GoldenSilver,
 }
 
 impl FractalType {
@@ -76,6 +79,7 @@ impl FractalType {
             FractalType::Tricorn => 3,
             FractalType::Buddhabrot => 4,
             FractalType::Nova { .. } => 5,
+            FractalType::GoldenSilver => 6,
         }
     }
 
@@ -94,6 +98,7 @@ impl FractalType {
                 c_real: c.x,
                 c_imag: c.y,
             },
+            FractalType::GoldenSilver => FractalParams::default(),
         }
     }
 
@@ -106,6 +111,7 @@ impl FractalType {
             FractalType::Tricorn => Tricorn.default_center(),
             FractalType::Buddhabrot => Buddhabrot.default_center(),
             FractalType::Nova { .. } => Nova::default().default_center(),
+            FractalType::GoldenSilver => GoldenSilver.default_center(),
         }
     }
 
@@ -118,6 +124,7 @@ impl FractalType {
             FractalType::Tricorn => Tricorn.default_zoom(),
             FractalType::Buddhabrot => Buddhabrot.default_zoom(),
             FractalType::Nova { .. } => Nova::default().default_zoom(),
+            FractalType::GoldenSilver => GoldenSilver.default_zoom(),
         }
     }
 
@@ -130,6 +137,7 @@ impl FractalType {
             FractalType::Tricorn => Tricorn.shader_source(),
             FractalType::Buddhabrot => Buddhabrot.shader_source(),
             FractalType::Nova { .. } => Nova::default().shader_source(),
+            FractalType::GoldenSilver => GoldenSilver.shader_source(),
         }
     }
 
@@ -142,6 +150,7 @@ impl FractalType {
             FractalType::Tricorn => Tricorn.shader_source_f64(),
             FractalType::Buddhabrot => Buddhabrot.shader_source_f64(),
             FractalType::Nova { .. } => Nova::default().shader_source_f64(),
+            FractalType::GoldenSilver => GoldenSilver.shader_source_f64(),
         }
     }
 
@@ -154,6 +163,7 @@ impl FractalType {
             FractalType::Tricorn => "Tricorn",
             FractalType::Buddhabrot => "Buddhabrot",
             FractalType::Nova { .. } => "Nova Fractal",
+            FractalType::GoldenSilver => "Golden-Silver Gasket",
         }
     }
 

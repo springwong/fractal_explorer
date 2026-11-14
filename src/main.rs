@@ -861,6 +861,13 @@ impl<'window> App<'window> {
                 self.camera.zoom = self.current_fractal.default_zoom();
                 log::info!("Switched to: {}", self.current_fractal.name());
             }
+            // Switch to Golden-Silver Gasket
+            Key::Character(ref c) if c == "7" => {
+                self.current_fractal = FractalType::GoldenSilver;
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
+                log::info!("Switched to: {}", self.current_fractal.name());
+            }
             // Reset view
             Key::Character(ref c) if c == "r" || c == "R" => {
                 self.camera.center = self.current_fractal.default_center();
