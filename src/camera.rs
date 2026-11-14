@@ -1,5 +1,33 @@
 use glam::{DVec2, UVec2, Vec2};
 
+/// Limits on where the camera may go, so the view never ends up in empty space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewBounds {
+    /// Lowest allowed view centre (x, y)
+    pub min: DVec2,
+    /// Highest allowed view centre (x, y)
+    pub max: DVec2,
+    /// Furthest zoom-out allowed
+    pub min_zoom: f64,
+    /// Deepest zoom-in allowed (beyond this the precision runs out)
+    pub max_zoom: f64,
+}
+
+impl ViewBounds {
+    /// No limits at all
+    pub const UNBOUNDED: Self = Self {
+        min: DVec2::splat(f64::NEG_INFINITY),
+        max: DVec2::splat(f64::INFINITY),
+        min_zoom: 0.0,
+        max_zoom: f64::INFINITY,
+    };
+
+    /// Bounds with centre limited to the box (x0, y0)..(x1, y1)
+    pub fn new(x0: f64, y0: f64, x1: f64, y1: f64, min_zoom: f64, max_zoom: f64) -> Self {
+        Self { min: DVec2::new(x0, y0), max: DVec2::new(x1, y1), min_zoom, max_zoom }
+    }
+}
+
 /// Camera for navigating the complex plane
 /// Uses f64 internally for deep zoom precision, converts to f32 for GPU
 pub struct Camera {
@@ -11,6 +39,8 @@ pub struct Camera {
     pub rotation: f64,
     /// Screen dimensions in pixels
     pub screen_size: UVec2,
+    /// Limits applied to centre and zoom
+    pub bounds: ViewBounds,
 }
 
 impl Camera {
@@ -21,6 +51,7 @@ impl Camera {
             zoom: 1.0,
             rotation: 0.0,
             screen_size,
+            bounds: ViewBounds::UNBOUNDED,
         }
     }
 
@@ -48,20 +79,34 @@ impl Camera {
         // Get complex coordinate before zoom
         let complex_pos = self.screen_to_complex(screen_pos);
 
-        // Apply zoom
-        self.zoom *= factor;
+        // Apply zoom, staying inside the allowed range
+        self.zoom = (self.zoom * factor).clamp(self.bounds.min_zoom, self.bounds.max_zoom);
 
         // Get complex coordinate after zoom
         let new_complex = self.screen_to_complex(screen_pos);
 
         // Adjust center to keep the point under cursor stationary
         self.center += complex_pos - new_complex;
+        self.clamp_to_bounds();
+    }
+
+    /// Set the limits for the current fractal and pull the view back inside them
+    pub fn set_bounds(&mut self, bounds: ViewBounds) {
+        self.bounds = bounds;
+        self.clamp_to_bounds();
+    }
+
+    /// Pull centre and zoom back inside `bounds`
+    pub fn clamp_to_bounds(&mut self) {
+        self.center = self.center.clamp(self.bounds.min, self.bounds.max);
+        self.zoom = self.zoom.clamp(self.bounds.min_zoom, self.bounds.max_zoom);
     }
 
     /// Pan camera by screen delta (in pixels); the view follows the drag.
     pub fn pan(&mut self, screen_delta: Vec2) {
         let delta = screen_delta.as_dvec2() / self.screen_size.y as f64;
         self.center -= self.screen_vec_to_complex(delta);
+        self.clamp_to_bounds();
     }
 
     /// Update screen size (called on window resize)
@@ -134,6 +179,39 @@ mod tests {
             let after = shader_map(&cam, pos.x as f64, pos.y as f64);
             assert!(close(before, after), "{:?} rot {}", cam.screen_size, cam.rotation);
         }
+    }
+
+    #[test]
+    fn bounds_stop_pan_and_zoom() {
+        let mut cam = Camera::new(UVec2::new(1920, 1080));
+        cam.set_bounds(ViewBounds::new(-2.0, -1.0, 1.0, 1.0, 0.25, 100.0));
+
+        // Dragging far away stops at the edge of the box
+        for _ in 0..200 {
+            cam.pan(Vec2::new(-500.0, 300.0));
+        }
+        assert_eq!(cam.center, DVec2::new(1.0, 1.0));
+
+        // Zooming stops at both limits, and at the limit the view no longer drifts
+        let corner = Vec2::new(100.0, 100.0);
+        for _ in 0..200 {
+            cam.zoom_at(corner, 1.5);
+        }
+        assert_eq!(cam.zoom, 100.0);
+        let settled = cam.center;
+        cam.zoom_at(corner, 1.5);
+        assert!(close(cam.center, settled));
+
+        for _ in 0..200 {
+            cam.zoom_at(corner, 0.5);
+        }
+        assert_eq!(cam.zoom, 0.25);
+
+        // A view that starts outside is pulled back in
+        cam.center = DVec2::new(50.0, -50.0);
+        cam.zoom = 1e30;
+        cam.set_bounds(cam.bounds);
+        assert_eq!((cam.center, cam.zoom), (DVec2::new(1.0, -1.0), 100.0));
     }
 
     #[test]

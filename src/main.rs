@@ -209,6 +209,12 @@ impl<'window> App<'window> {
             self.toggle_linked_mode();
         }
 
+        // Keep the view inside the current fractal's bounds
+        self.camera.set_bounds(self.current_fractal.view_bounds());
+        if self.linked_mode {
+            self.julia_camera.set_bounds(FractalType::Julia { c: Vec2::ZERO }.view_bounds());
+        }
+
         // Handle pending canvas resize (mobile fix button)
         if self.pending_resize_canvas {
             self.pending_resize_canvas = false;

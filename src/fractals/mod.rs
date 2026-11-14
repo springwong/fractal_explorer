@@ -15,6 +15,7 @@ pub use buddhabrot::Buddhabrot;
 pub use nova::Nova;
 pub use golden_silver::GoldenSilver;
 
+use crate::camera::ViewBounds;
 use glam::{DVec2, Vec2};
 
 /// Trait for fractal types
@@ -128,6 +129,25 @@ impl FractalType {
         }
     }
 
+    /// Where the camera may go for this fractal: the centre stays inside a box
+    /// around the interesting region and zoom stays within what can be shown.
+    pub fn view_bounds(&self) -> ViewBounds {
+        // Deepest useful zoom: f64 camera with perturbation, emulated double, or plain f32
+        const PERTURBATION: f64 = 1e13;
+        const EMULATED_DOUBLE: f64 = 1e10;
+        match self {
+            FractalType::Mandelbrot => ViewBounds::new(-2.5, -1.5, 1.0, 1.5, 0.2, PERTURBATION),
+            FractalType::Julia { .. } => ViewBounds::new(-2.0, -2.0, 2.0, 2.0, 0.2, PERTURBATION),
+            FractalType::BurningShip => ViewBounds::new(-2.5, -2.0, 1.5, 1.0, 0.2, EMULATED_DOUBLE),
+            FractalType::Tricorn => ViewBounds::new(-2.5, -2.0, 1.5, 2.0, 0.2, EMULATED_DOUBLE),
+            // Samples thin out quadratically with zoom, so deep views stay empty
+            FractalType::Buddhabrot => ViewBounds::new(-2.5, -1.5, 1.0, 1.5, 0.2, 200.0),
+            FractalType::Nova { .. } => ViewBounds::new(-3.0, -3.0, 3.0, 3.0, 0.2, EMULATED_DOUBLE),
+            // The pattern keeps repeating outwards, so allow a wide area
+            FractalType::GoldenSilver => ViewBounds::new(-8.0, -8.0, 8.0, 8.0, 0.05, EMULATED_DOUBLE),
+        }
+    }
+
     /// Get the shader source for this fractal
     pub fn shader_source(&self) -> &'static str {
         match self {
@@ -175,7 +195,28 @@ impl FractalType {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use wgpu::naga;
+
+    /// Each fractal's default view must sit inside its own bounds.
+    #[test]
+    fn default_views_are_inside_bounds() {
+        let all = [
+            FractalType::Mandelbrot,
+            FractalType::Julia { c: Vec2::ZERO },
+            FractalType::BurningShip,
+            FractalType::Tricorn,
+            FractalType::Buddhabrot,
+            FractalType::Nova { c: Vec2::ZERO },
+            FractalType::GoldenSilver,
+        ];
+        for f in all {
+            let b = f.view_bounds();
+            let (c, z) = (f.default_center(), f.default_zoom());
+            assert!(c.cmpge(b.min).all() && c.cmple(b.max).all(), "{}: centre", f.name());
+            assert!(z >= b.min_zoom && z <= b.max_zoom, "{}: zoom", f.name());
+        }
+    }
 
     /// Every shipped shader must parse and validate.
     #[test]
