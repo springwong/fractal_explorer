@@ -143,8 +143,10 @@ impl FractalType {
             // Samples thin out quadratically with zoom, so deep views stay empty
             FractalType::Buddhabrot => ViewBounds::new(-2.5, -1.5, 1.0, 1.5, 0.2, 200.0),
             FractalType::Nova { .. } => ViewBounds::new(-3.0, -3.0, 3.0, 3.0, 0.2, EMULATED_DOUBLE),
-            // The pattern keeps repeating outwards, so allow a wide area
-            FractalType::GoldenSilver => ViewBounds::new(-8.0, -8.0, 8.0, 8.0, 0.05, EMULATED_DOUBLE),
+            // Keep the centre on the unit square the gasket is defined on. Further out the
+            // pattern repeats but its holes grow with it (the one at phi^4 is ~4 units wide),
+            // so a wider box lets the view sit inside a single flat-coloured hole.
+            FractalType::GoldenSilver => ViewBounds::new(0.0, 0.0, 1.0, 1.0, 0.3, EMULATED_DOUBLE),
         }
     }
 
