@@ -336,6 +336,14 @@ impl<'window> App<'window> {
             if is_buddhabrot {
                 self.buddhabrot_dirty = true;
             }
+            // Start every fractal from its own default view (the keyboard shortcuts
+            // already did; the panel used to keep the previous fractal's position and
+            // zoom, which usually lands deep inside or far outside the new one).
+            // Linked mode manages its own cameras.
+            if !self.linked_mode {
+                self.camera.center = self.current_fractal.default_center();
+                self.camera.zoom = self.current_fractal.default_zoom();
+            }
             self.prev_fractal_type_id = current_type_id;
         }
 
