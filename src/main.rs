@@ -29,6 +29,20 @@ enum ActiveViewport {
     None,
 }
 
+/// Everything the fractal compute pass depends on. While this is unchanged the
+/// previous frame's texture is still correct and the compute pass can be skipped.
+#[derive(Clone, PartialEq)]
+struct ViewKey {
+    fractal: FractalType,
+    center: glam::DVec2,
+    zoom: f64,
+    rotation: f64,
+    max_iter: u32,
+    size: (u32, u32),
+    /// Julia camera (center, zoom, rotation) and c when linked mode is on
+    linked: Option<(glam::DVec2, f64, f64, Vec2)>,
+}
+
 /// Portable instant type for FPS tracking
 #[cfg(not(target_arch = "wasm32"))]
 type FrameInstant = std::time::Instant;
@@ -82,6 +96,8 @@ struct App<'window> {
     resize_countdown: u32, // frames to wait before auto-resize on wasm
     recording_state: RecordingState,
     last_uniforms: FractalUniforms,
+    /// View state the fractal texture was last computed for (None = must recompute)
+    rendered_view: Option<ViewKey>,
 
     // Buddhabrot state
     buddhabrot_seed: u32,
@@ -127,6 +143,7 @@ impl<'window> App<'window> {
             resize_countdown: 0,
             recording_state: RecordingState::default(),
             last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0, 0.0),
+            rendered_view: None,
             buddhabrot_seed: 0,
             buddhabrot_dirty: true,
             prev_fractal_type_id: 0,
@@ -337,12 +354,35 @@ impl<'window> App<'window> {
             pixel_step_y = (-1.0 / (self.camera.zoom * screen_height)) as f32;
         }
 
+        // Skip the fractal compute pass when nothing it depends on has changed.
+        // Buddhabrot accumulates progressively, so it always runs.
+        let view_key = ViewKey {
+            fractal: self.current_fractal.clone(),
+            center: self.camera.center,
+            zoom: self.camera.zoom,
+            rotation: self.camera.rotation,
+            max_iter: self.max_iter,
+            size: (gpu.surface_config.width, gpu.surface_config.height),
+            linked: self.linked_mode.then(|| (
+                self.julia_camera.center,
+                self.julia_camera.zoom,
+                self.julia_camera.rotation,
+                self.linked_julia_c,
+            )),
+        };
+        let needs_compute = is_buddhabrot
+            || self.palette_dirty
+            || self.rendered_view.as_ref() != Some(&view_key);
+
         // Compute reference orbit for perturbation (Mandelbrot & Julia, when using f64)
         let use_f64 = self.camera.zoom >= 5.0e3;
         let fractal_id = self.current_fractal.type_id();
         let ref_escape_iter = if is_buddhabrot {
             // For Buddhabrot, use ref_escape_iter as frame seed
             self.buddhabrot_seed
+        } else if !needs_compute {
+            // View unchanged: the orbit already on the GPU is still valid
+            self.last_uniforms.ref_escape_iter
         } else if use_f64 && fractal_id == 0 {
             // Mandelbrot: z_{n+1} = z_n^2 + c, z_0 = 0, c = center
             let (orbit_data, escape_iter) = compute_reference_orbit(
@@ -445,7 +485,7 @@ impl<'window> App<'window> {
             );
             // Increment seed for next frame's random samples
             self.buddhabrot_seed = self.buddhabrot_seed.wrapping_add(1);
-        } else {
+        } else if needs_compute {
             // Auto-switch to f64 emulated precision at high zoom levels
             compute.dispatch(
                 &gpu.device,
@@ -458,7 +498,7 @@ impl<'window> App<'window> {
         }
 
         // In linked mode, also dispatch Julia compute
-        if self.linked_mode {
+        if self.linked_mode && needs_compute {
             // Build Julia uniforms from julia_camera
             let (jc_x_hi, jc_x_lo) = ds_split(self.julia_camera.center.x);
             let (jc_y_hi, jc_y_lo) = ds_split(self.julia_camera.center.y);
@@ -555,6 +595,7 @@ impl<'window> App<'window> {
 
         // Submit commands
         gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.rendered_view = Some(view_key);
 
         // Cleanup egui resources
         ui.finish(window, full_output);
@@ -648,6 +689,9 @@ impl<'window> App<'window> {
         if new_size.width == 0 || new_size.height == 0 {
             return;
         }
+
+        // Textures are recreated below, so the fractal must be recomputed
+        self.rendered_view = None;
 
         // Update cameras
         self.camera
