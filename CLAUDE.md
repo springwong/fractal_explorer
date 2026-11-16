@@ -55,18 +55,15 @@ fractal-explorer/
 │   ├── export.rs              # PNG 導出、影片錄製
 │   ├── renderer/
 │   │   ├── mod.rs
-│   │   ├── gpu.rs             # wgpu 初始化、pipeline
-│   │   ├── compute.rs         # Compute shader 管理
-│   │   └── texture.rs         # Output texture
+│   │   ├── gpu.rs             # wgpu 初始化（失敗時回傳 Err，不 panic）
+│   │   ├── shader.rs          # 由共用模組 + fractal 本體組合 WGSL
+│   │   ├── fractal_pass.rs    # 共用 per-pixel compute pass（即時畫面、聯動 Julia、PNG、影片）
+│   │   ├── compute.rs         # 即時畫面的 target + Buddhabrot 兩個 pass
+│   │   ├── render.rs          # Fullscreen quad
+│   │   └── uniforms.rs        # FractalUniforms、View、reference orbit
 │   ├── fractals/
-│   │   ├── mod.rs             # FractalType enum + Fractal trait
-│   │   ├── mandelbrot.rs
-│   │   ├── julia.rs
-│   │   ├── burning_ship.rs
-│   │   ├── tricorn.rs
-│   │   ├── buddhabrot.rs      # 不同渲染邏輯
-│   │   ├── nova.rs
-│   │   └── lyapunov.rs
+│   │   ├── mod.rs             # FractalType enum + FractalInfo 表（唯一的 fractal 定義處）
+│   │   └── golden_silver.rs   # 金銀墊片的 CPU 端 uniform 計算
 │   ├── ui/
 │   │   ├── mod.rs
 │   │   ├── control_panel.rs   # egui 側邊欄
@@ -78,11 +75,15 @@ fractal-explorer/
 │   │   ├── palette.rs         # Palette、ColorStop、LUT 生成
 │   │   └── presets.rs         # 內建配色方案預設
 │   └── shaders/
-│       ├── common.wgsl        # 共用函數（smooth iter、colorize）
-│       ├── fullscreen.wgsl    # Fullscreen quad
-│       ├── mandelbrot.wgsl
-│       ├── julia.wgsl
-│       └── burning_ship.wgsl
+│       ├── common.wgsl            # Uniforms struct（WGSL 端唯一一份）
+│       ├── bindings_standard.wgsl # output texture + palette
+│       ├── bindings_orbit.wgsl    # output texture + reference orbit + palette
+│       ├── palette.wgsl           # sample_palette()
+│       ├── view.wgsl              # pixel → 複數平面座標
+│       ├── rebasing.wgsl          # 帶 rebasing 的 perturbation 迴圈
+│       ├── fullscreen.wgsl        # Fullscreen quad
+│       ├── <fractal>.wgsl         # 各 fractal 的迭代函數 + main（f32）
+│       └── <fractal>_f64.wgsl     # 深度縮放版本（perturbation）
 ├── assets/
 │   └── palettes/
 └── tests/
@@ -94,32 +95,35 @@ fractal-explorer/
 
 ## 核心設計
 
-### Fractal Trait
+### Fractal 定義（`src/fractals/mod.rs`）
+
+`FractalType` enum 帶即時參數（如 Julia 的 c）；每個 variant 對應一個 `static FractalInfo`，
+集中記錄名稱、預設視圖、視圖邊界、shader 同渲染方式。面板、鍵盤、渲染、導出全部由呢張表驅動。
 ```rust
-pub trait Fractal: Send + Sync {
-    fn shader_source(&self) -> &str;
-    fn uniform_data(&self) -> Vec<u8>;
-    fn iterate_cpu(&self, cx: f64, cy: f64, max_iter: u32) -> u32;
-    fn default_center(&self) -> glam::DVec2;
-    fn default_zoom(&self) -> f64;
-    fn name(&self) -> &str;
-    fn parameters(&self) -> Vec<Parameter> { vec![] }
+pub struct FractalInfo {
+    pub id: u32,                 // = FractalType::ALL 入面嘅位置
+    pub name: &'static str,
+    pub default_center: DVec2,
+    pub default_zoom: f64,
+    pub bounds: ViewBounds,
+    pub render: RenderMode,      // PerPixel { shader, deep_shader } | Accumulation
 }
+
+// 切換深度縮放 shader 的唯一門檻：zoom × 輸出高度（像素密度），唔係單睇 zoom
+pub const DEEP_ZOOM_PIXEL_DENSITY: f64 = 4.0e6;
 ```
 
-### FractalType Enum
-```rust
-#[derive(Clone, PartialEq)]
-pub enum FractalType {
-    Mandelbrot,
-    Julia { c_real: f64, c_imag: f64 },
-    BurningShip,
-    Tricorn,
-    Nova { c_real: f64, c_imag: f64 },
-    Lyapunov { sequence: String },
-    Buddhabrot { samples: u32 },
-}
-```
+### Shader 組合（`src/renderer/shader.rs`）
+
+WGSL 冇 `#include`，所以由 `Shader::source()` 將共用模組同 fractal 本體串埋：
+
+| ShaderKind | 模組 |
+|------------|------|
+| `Standard` | common + bindings_standard + palette + view |
+| `Perturbation` | common + bindings_orbit + palette + view（本體自己寫迴圈：Julia、Nova） |
+| `RebasingPerturbation` | 同上 + rebasing（本體只提供 `delta_step`：Mandelbrot、Burning Ship、Tricorn） |
+
+各 fractal 的 `.wgsl` 只寫迭代函數同 `main`，唔好再抄 `Uniforms`、`sample_palette` 或 perturbation 迴圈。
 
 ### GPU Uniform 結構
 ```rust
@@ -134,7 +138,9 @@ pub struct FractalUniforms {
     c_real: f32,
     c_imag: f32,
     color_scheme: u32,
-    _padding: [u32; 3],    // 必須維持 16-byte 對齊
+    // ... 完整欄位見 src/renderer/uniforms.rs（80 bytes）
+    extra: [u32; 3],       // 各 fractal 自用
+    _pad3: u32,            // 必須維持 16-byte 對齊
 }
 ```
 
@@ -314,7 +320,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 **自訂 Palette 編輯器實現細節：**
 - GPU storage buffer LUT：256 個 packed RGBA8 u32（1024 bytes）
 - CPU 線性插值生成 LUT，上傳至 GPU storage buffer
-- 所有 11 個 shader 使用 `sample_palette()` 從 LUT 取樣，取代硬編碼 colorize 函數
+- 所有 shader 使用 `palette.wgsl` 的 `sample_palette()` 從 LUT 取樣
 - binding 配置：標準 layout binding 2、perturbation/tonemap layout binding 3
 - 7 個內建預設 + 自訂編輯器（egui Window，支援拖曳色標、色彩選擇器）
 - 調色盤變更時即時更新，無需重新編譯 shader
@@ -327,20 +333,30 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 - [ ] WebAssembly 支援
 
 ### Phase 5：低優先級（Low Priority）
-- [ ] Burning Ship perturbation theory f64（目前使用 Dekker emulated double，精度有限）
-- [ ] Tricorn perturbation theory f64（目前使用 Dekker emulated double，精度有限）
+- [x] Burning Ship perturbation theory（取代 Dekker emulated double）
+- [x] Tricorn perturbation theory（取代 Dekker emulated double）
+- [x] Nova perturbation theory
 
 ---
 
 ## 精度問題
 
-f32 在縮放超過約 **1e6** 時會出現像素化失真，解決方案：
+f32 的極限係相鄰像素之間嘅間距：|c| 近 2 時 f32 數值相隔 2.4e-7，像素再密就會共用座標，
+畫面變格仔。所以切換門檻按 **zoom × 輸出高度** 計（`DEEP_ZOOM_PIXEL_DENSITY`）：
+1080p 約 zoom 3.7e3，8K 導出約 9e2。
 
-1. **f64 CPU fallback**：自動切換，簡單但較慢
-2. **Emulated double（GPU）**：兩個 f32 模擬 f64，性能損失約 4x
-3. **Perturbation Theory**：支援無限深度，最複雜
+過咗門檻全部用 **perturbation theory**：CPU 用 f64 計一條 reference orbit，GPU 每個像素
+只用 f32 追蹤同 reference 嘅偏差。
 
-建議：Phase 1-2 用 f32 → Phase 3 加 emulated double → Phase 4 考慮 perturbation
+- Mandelbrot / Burning Ship / Tricorn：`rebasing.wgsl` 共用迴圈；|z| < |w| 或 reference
+  用完時 rebase 返去 Z_0 = 0，唔會跌返落 f32 座標
+- Julia / Nova：每個像素由自己嘅 z_0 開始，c 固定，偏差公式本身冇抵消誤差
+- 深度上限由相機嘅 f64 中心決定（約 1e13）
+
+**唔好用 emulated double（兩個 f32 模擬 f64）**：Dekker / Knuth 嘅誤差補償靠運算次序，
+Metal 等 backend 嘅 fast-math 會將誤差項優化走，結果同普通 f32 一樣（曾經喺 M1 上量度到）。
+
+`export.rs` 嘅 `deep_zoom_matches_f64_reference` 測試會將 GPU 輸出同 CPU f64 參考逐像素比較。
 
 ---
 
@@ -359,15 +375,18 @@ f32 在縮放超過約 **1e6** 時會出現像素化失真，解決方案：
 
 - Public API 必須有 `///` doc comment
 - `FractalUniforms` 必須維持 16-byte 對齊
-- Shader 改動時同步更新 Rust `bytemuck` 結構
+- Uniform 佈局改動時同步更新 Rust `bytemuck` 結構同 `common.wgsl`
 
 **新增 fractal 的 checklist：**
-1. `FractalType` enum 加 variant
-2. 對應 `.wgsl` shader
-3. `Fractal` trait 實現
-4. UI 控制欄加選項
-5. 鍵盤快捷鍵
-6. `tests/fractal_correctness.rs` 加測試
+1. `src/shaders/` 加 `.wgsl` 本體（只寫迭代函數 + `main`；需要深度縮放再加 `_f64.wgsl`）
+2. `src/fractals/mod.rs`：`FractalType` 加 variant、加一個 `static FractalInfo`、
+   `info()` 加一個 match arm、`FractalType::ALL` 加一項（位置 = `id` = 鍵盤數字 - 1）
+3. `cargo test`（shader 驗證、id 順序、預設視圖、離屏渲染測試會自動涵蓋新 fractal）
+
+面板選項、鍵盤快捷鍵、pipeline、PNG / 影片導出都唔使改。
+
+**改 uniform 佈局：** 只改 `FractalUniforms`（`src/renderer/uniforms.rs`）同
+`src/shaders/common.wgsl` 兩處；`layout_matches_wgsl` 測試會對比兩邊的 offset。
 
 ---
 

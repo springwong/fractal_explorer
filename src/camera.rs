@@ -28,13 +28,13 @@ impl ViewBounds {
     };
 
     /// Bounds with centre limited to the box (x0, y0)..(x1, y1)
-    pub fn new(x0: f64, y0: f64, x1: f64, y1: f64, min_zoom: f64, max_zoom: f64) -> Self {
+    pub const fn new(x0: f64, y0: f64, x1: f64, y1: f64, min_zoom: f64, max_zoom: f64) -> Self {
         Self { min: DVec2::new(x0, y0), max: DVec2::new(x1, y1), min_zoom, max_zoom, edge_margin: None }
     }
 
     /// Treat the box as the picture's edge and let only a strip of `margin` x view size
     /// show beyond it.
-    pub fn with_edge_margin(mut self, margin: f64) -> Self {
+    pub const fn with_edge_margin(mut self, margin: f64) -> Self {
         self.edge_margin = Some(margin);
         self
     }
@@ -156,11 +156,6 @@ impl Camera {
         self.center = DVec2::new(-0.5, 0.0);
         self.zoom = 1.0;
         self.rotation = 0.0;
-    }
-
-    /// Get current aspect ratio
-    pub fn aspect_ratio(&self) -> f32 {
-        self.screen_size.x as f32 / self.screen_size.y as f32
     }
 }
 

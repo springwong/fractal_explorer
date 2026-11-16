@@ -22,10 +22,34 @@
             display: block !important;
             touch-action: none;
         }
+        /* Shown by the app when it cannot start (e.g. no WebGPU) */
+        #fatal-error {
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            box-sizing: border-box;
+            background: #000;
+            color: #e8e8e8;
+            font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+        #fatal-error[hidden] { display: none; }
+        #fatal-error div { max-width: 34em; }
+        #fatal-error h1 { font-size: 20px; margin: 0 0 8px; }
+        #fatal-error p { margin: 0; color: #b0b0b0; }
     </style>
     <link data-trunk rel="rust" data-wasm-opt="z" />
 </head>
 <body>
+<div id="fatal-error" role="alert" hidden>
+    <div>
+        <h1>Fractal Explorer can't start</h1>
+        <p class="message"></p>
+    </div>
+</div>
 <script>
 // Workaround: wgpu 22 sends maxInterStageShaderComponents which was
 // removed from the WebGPU spec (Chrome 130+). Strip it before the call.

@@ -1,43 +1,11 @@
-use super::{Fractal, FractalParams};
+//! Golden-Silver Gasket: the Sierpinski triangle rebuilt in the golden-ratio base.
+//!
+//! Points whose golden-base (Zeckendorf-style) expansions of x and y never share a
+//! power of phi. Dimension = ln(1 + sqrt(2)) / ln(phi) ~ 1.8316.
+//!
+//! One shader serves every zoom level: the CPU handles the deep part (see `apply_view`).
+
 use crate::renderer::FractalUniforms;
-use glam::DVec2;
-
-/// Golden-Silver Gasket: the Sierpinski triangle rebuilt in the golden-ratio base.
-///
-/// Points whose golden-base (Zeckendorf-style) expansions of x and y never share a
-/// power of phi. Dimension = ln(1 + sqrt(2)) / ln(phi) ~ 1.8316.
-pub struct GoldenSilver;
-
-impl Fractal for GoldenSilver {
-    fn shader_source(&self) -> &'static str {
-        include_str!("../shaders/golden_silver.wgsl")
-    }
-
-    fn shader_source_f64(&self) -> &'static str {
-        // One shader for every zoom level: the CPU handles the deep part (see `apply_view`)
-        self.shader_source()
-    }
-
-    fn type_id(&self) -> u32 {
-        6
-    }
-
-    fn get_params(&self) -> FractalParams {
-        FractalParams::default()
-    }
-
-    fn default_center(&self) -> DVec2 {
-        DVec2::new(0.5, 0.5)
-    }
-
-    fn default_zoom(&self) -> f64 {
-        0.9
-    }
-
-    fn name(&self) -> &'static str {
-        "Golden-Silver Gasket"
-    }
-}
 
 /// Highest power of phi used: the pattern covers |x|, |y| < phi^(TOP_POW + 1) ~ 199.
 const TOP_POW: i32 = 10;
@@ -164,25 +132,15 @@ pub fn apply_view(u: &mut FractalUniforms, width: u32, height: u32) {
     u.pixel_step_x = ax.cell_b as f32;
     u.pixel_step_y = ay.cell_b as f32;
     u.ref_escape_iter = (TOP_POW - low_pow + 1).max(0) as u32;
-    u._pad2[0] = ((scale / (zoom * height as f64)) as f32).to_bits();
+    u.extra[0] = ((scale / (zoom * height as f64)) as f32).to_bits();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::ds_split;
-    use wgpu::naga;
-
-    #[test]
-    fn shader_is_valid_wgsl() {
-        let module = naga::front::wgsl::parse_str(GoldenSilver.shader_source()).expect("WGSL parse failed");
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .expect("WGSL validation failed");
-    }
+    use crate::fractals::FractalType;
+    use crate::renderer::View;
+    use glam::DVec2;
 
     /// Straightforward f64 definition: level at which (px, py) is removed, 0 if it survives.
     fn removal_level(px: f64, py: f64, levels: u32) -> u32 {
@@ -246,7 +204,7 @@ mod tests {
     fn shade(u: &FractalUniforms, px: f32, py: f32) -> (u32, u32) {
         const INV_PHI: f32 = 0.6180339887;
         const LN_PHI: f32 = 0.4812118251;
-        let step = f32::from_bits(u._pad2[0]);
+        let step = f32::from_bits(u.extra[0]);
         let (sin_r, cos_r) = (u.rotation.sin(), u.rotation.cos());
         let dx = (px * cos_r - py * sin_r) * step;
         let dy = -(px * sin_r + py * cos_r) * step;
@@ -311,17 +269,12 @@ mod tests {
         for &(cx, cy) in &centers {
             for &zoom in &zooms {
                 for &rotation in &rotations {
-                    let (cxh, cxl) = ds_split(cx);
-                    let (cyh, cyl) = ds_split(cy);
-                    let (zh, zl) = ds_split(zoom);
-                    let mut u = FractalUniforms::new(
-                        [cxh, cyh], zh, width as f32 / height as f32, 256, 6, 0, 0.0, 0.0,
-                        [cxl, cyl], zl, 0.0, 0.0, 0, rotation as f32,
-                    );
-                    apply_view(&mut u, width, height);
+                    let view = View { center: DVec2::new(cx, cy), zoom, rotation, max_iter: 256 };
+                    // Building the uniforms for the gasket runs `apply_view`
+                    let u = FractalUniforms::for_view(&FractalType::GoldenSilver, &view, width, height);
                     // The uniforms carry the view in f32 pairs; use exactly what they hold
-                    let (cx, cy) = (cxh as f64 + cxl as f64, cyh as f64 + cyl as f64);
-                    let (zoom, rot) = (zh as f64 + zl as f64, rotation as f32 as f64);
+                    let (cx, cy) = (u.center[0] as f64 + u.center_lo_x as f64, u.center[1] as f64 + u.center_lo_y as f64);
+                    let (zoom, rot) = (u.zoom as f64 + u.zoom_lo as f64, u.rotation as f64);
 
                     let (mut bad, samples) = (0, 2000);
                     for _ in 0..samples {

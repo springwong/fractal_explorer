@@ -7,16 +7,16 @@ mod ui;
 
 use camera::Camera;
 use coloring::ColorScheme;
-use fractals::FractalType;
+use fractals::{FractalType, MAX_ITERATIONS, MIN_ITERATIONS};
 use glam::{UVec2, Vec2};
-use renderer::{ComputePipeline, FractalUniforms, GpuContext, RenderPipeline, ds_split, compute_reference_orbit, compute_reference_orbit_julia};
+use renderer::{ComputePipeline, GpuContext, RenderPipeline, View};
 use export::{ExportResolution, VideoSettings};
 use ui::{ControlPanel, PanelAction, PaletteEditor, RecordingState, UiContext};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key, NamedKey},
     window::{Window, WindowAttributes},
 };
@@ -34,13 +34,10 @@ enum ActiveViewport {
 #[derive(Clone, PartialEq)]
 struct ViewKey {
     fractal: FractalType,
-    center: glam::DVec2,
-    zoom: f64,
-    rotation: f64,
-    max_iter: u32,
+    view: View,
     size: (u32, u32),
-    /// Julia camera (center, zoom, rotation) and c when linked mode is on
-    linked: Option<(glam::DVec2, f64, f64, Vec2)>,
+    /// Julia view and c when linked mode is on
+    linked: Option<(View, Vec2)>,
 }
 
 /// Portable instant type for FPS tracking
@@ -62,10 +59,29 @@ impl FrameInstant {
     }
 }
 
+/// Everything that exists only once the GPU is up
+struct GpuState {
+    gpu: GpuContext,
+    compute: ComputePipeline,
+    render: RenderPipeline,
+    ui: UiContext,
+}
+
+/// Events sent to the event loop from outside winit
+enum AppEvent {
+    /// Asynchronous GPU initialisation finished (the browser cannot block on it)
+    GpuReady(Result<Box<GpuState>, String>),
+}
+
 /// Main application state
-struct App<'window> {
+struct App {
     window: Option<Arc<Window>>,
-    gpu: Option<GpuContext<'window>>,
+    /// Hands results of async work back to the event loop
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    proxy: EventLoopProxy<AppEvent>,
+    /// GPU initialisation failed; the error is on screen and nothing more is drawn
+    gpu_failed: bool,
+    gpu: Option<GpuContext>,
     camera: Camera,
     compute: Option<ComputePipeline>,
     render: Option<RenderPipeline>,
@@ -95,14 +111,13 @@ struct App<'window> {
     pending_resize_canvas: bool,
     resize_countdown: u32, // frames to wait before auto-resize on wasm
     recording_state: RecordingState,
-    last_uniforms: FractalUniforms,
     /// View state the fractal texture was last computed for (None = must recompute)
     rendered_view: Option<ViewKey>,
 
     // Buddhabrot state
     buddhabrot_seed: u32,
     buddhabrot_dirty: bool,
-    prev_fractal_type_id: u32,
+    prev_fractal_id: u32,
 
     // FPS tracking
     last_frame_time: FrameInstant,
@@ -118,10 +133,12 @@ struct App<'window> {
     pending_toggle_linked: bool,
 }
 
-impl<'window> App<'window> {
-    fn new() -> Self {
+impl App {
+    fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
             window: None,
+            proxy,
+            gpu_failed: false,
             gpu: None,
             camera: Camera::new(UVec2::new(1920, 1080)),
             compute: None,
@@ -142,11 +159,10 @@ impl<'window> App<'window> {
             pending_resize_canvas: false,
             resize_countdown: 0,
             recording_state: RecordingState::default(),
-            last_uniforms: FractalUniforms::new([0.0; 2], 1.0, 1.0, 256, 0, 0, 0.0, 0.0, [0.0; 2], 0.0, 0.0, 0.0, 0, 0.0),
             rendered_view: None,
             buddhabrot_seed: 0,
             buddhabrot_dirty: true,
-            prev_fractal_type_id: 0,
+            prev_fractal_id: 0,
             last_frame_time: FrameInstant::now(),
             frame_count: 0,
             fps: 0.0,
@@ -160,16 +176,82 @@ impl<'window> App<'window> {
     }
 
     /// Initialize GPU and pipelines after window creation (async)
-    async fn init_gpu(window: Arc<Window>) -> (GpuContext<'window>, ComputePipeline, RenderPipeline, UiContext) {
+    async fn init_gpu(window: Arc<Window>) -> Result<GpuState, String> {
         let size = window.inner_size();
         // Fallback to reasonable default if canvas hasn't been laid out yet
         let w = if size.width > 0 { size.width } else { 1920 };
         let h = if size.height > 0 { size.height } else { 1080 };
-        let gpu = GpuContext::new(window.clone()).await;
+        let gpu = GpuContext::new(window.clone()).await?;
         let compute = ComputePipeline::new(&gpu.device, w, h);
-        let render = RenderPipeline::new(&gpu.device, gpu.surface_config.format, &compute.texture_view, &compute.julia_texture_view);
+        let render = RenderPipeline::new(&gpu.device, gpu.surface_config.format, &compute.main.view, &compute.julia.view);
         let ui = UiContext::new(&gpu.device, gpu.surface_config.format, &window);
-        (gpu, compute, render, ui)
+        Ok(GpuState { gpu, compute, render, ui })
+    }
+
+    /// Take over the result of GPU initialisation. On failure the user is told why
+    /// instead of being left with a blank window.
+    fn on_gpu_ready(&mut self, event_loop: &ActiveEventLoop, result: Result<Box<GpuState>, String>) {
+        let state = match result {
+            Ok(state) => *state,
+            Err(message) => {
+                log::error!("GPU initialisation failed: {message}");
+                show_fatal_error(&message);
+                self.gpu_failed = true;
+                // Nothing will ever be drawn: stop spinning the event loop.
+                // A native window has nowhere to show the message, so close it.
+                event_loop.set_control_flow(ControlFlow::Wait);
+                #[cfg(not(target_arch = "wasm32"))]
+                event_loop.exit();
+                return;
+            }
+        };
+        let GpuState { mut gpu, compute, render, ui } = state;
+
+        // The surface may have been configured before the canvas was laid out
+        // (browser). Reconfigure with the actual size.
+        if let Some(size) = self.window.as_ref().map(|w| w.inner_size()) {
+            if size.width > 0 && size.height > 0 {
+                gpu.resize(size.width, size.height);
+                self.camera.resize(UVec2::new(size.width, size.height));
+                self.julia_camera.resize(UVec2::new(size.width, size.height));
+            }
+        }
+
+        log::info!(
+            "Application initialized successfully, size: {}x{}",
+            gpu.surface_config.width,
+            gpu.surface_config.height
+        );
+        self.ui = Some(ui);
+        self.gpu = Some(gpu);
+        self.compute = Some(compute);
+        self.render = Some(render);
+
+        // Auto-resize after ~1s to fix mobile viewport height
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.resize_countdown = 60;
+        }
+        if let Some(ref window) = self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// Switch to `fractal`, starting from its default view
+    fn select_fractal(&mut self, fractal: FractalType) {
+        self.current_fractal = fractal;
+        self.camera.center = self.current_fractal.default_center();
+        self.camera.zoom = self.current_fractal.default_zoom();
+        log::info!("Switched to: {}", self.current_fractal.name());
+    }
+
+    /// Move the Julia / Nova parameter c by `delta`
+    fn nudge_c(&mut self, delta: Vec2) {
+        let name = self.current_fractal.name();
+        if let Some(c) = self.current_fractal.c_mut() {
+            *c += delta;
+            log::info!("{} c = ({:.4}, {:.4})", name, c.x, c.y);
+        }
     }
 
     fn toggle_linked_mode(&mut self) {
@@ -243,11 +325,8 @@ impl<'window> App<'window> {
             }
         }
 
-        // GPU init is async on wasm — keep requesting redraws until ready
+        // GPU init is async on wasm: nothing to draw until `AppEvent::GpuReady` arrives
         if self.gpu.is_none() {
-            if let Some(ref window) = self.window {
-                window.request_redraw();
-            }
             return;
         }
 
@@ -326,13 +405,11 @@ impl<'window> App<'window> {
             self.palette_dirty = true;
         }
 
-        // Get fractal parameters
-        let params = self.current_fractal.params();
         let is_buddhabrot = self.current_fractal.is_buddhabrot();
 
         // Detect fractal type change
-        let current_type_id = self.current_fractal.type_id();
-        if current_type_id != self.prev_fractal_type_id {
+        let current_id = self.current_fractal.id();
+        if current_id != self.prev_fractal_id {
             if is_buddhabrot {
                 self.buddhabrot_dirty = true;
             }
@@ -344,112 +421,33 @@ impl<'window> App<'window> {
                 self.camera.center = self.current_fractal.default_center();
                 self.camera.zoom = self.current_fractal.default_zoom();
             }
-            self.prev_fractal_type_id = current_type_id;
+            self.prev_fractal_id = current_id;
         }
 
-        // Split f64 camera values into hi+lo f32 pairs for emulated double precision
-        let (center_x_hi, center_x_lo) = ds_split(self.camera.center.x);
-        let (center_y_hi, center_y_lo) = ds_split(self.camera.center.y);
-        let (zoom_hi, zoom_lo) = ds_split(self.camera.zoom);
-
-        // Compute per-pixel step on CPU in f64 for precision
-        let screen_height = gpu.surface_config.height as f64;
-        let screen_width = gpu.surface_config.width as f64;
-        let pixel_step_x;
-        let pixel_step_y;
-
-        if is_buddhabrot {
-            // For Buddhabrot, repurpose pixel_step_x/y to pass screen dimensions
-            // The shader recovers dimensions via: width = u32(abs(1.0 / pixel_step_x))
-            pixel_step_x = 1.0 / screen_width as f32;
-            pixel_step_y = 1.0 / screen_height as f32;
-        } else {
-            pixel_step_x = (1.0 / (self.camera.zoom * screen_height)) as f32;
-            pixel_step_y = (-1.0 / (self.camera.zoom * screen_height)) as f32;
-        }
+        let view = View {
+            center: self.camera.center,
+            zoom: self.camera.zoom,
+            rotation: self.camera.rotation,
+            max_iter: self.max_iter,
+        };
+        let julia_view = View {
+            center: self.julia_camera.center,
+            zoom: self.julia_camera.zoom,
+            rotation: self.julia_camera.rotation,
+            max_iter: self.max_iter,
+        };
 
         // Skip the fractal compute pass when nothing it depends on has changed.
         // Buddhabrot accumulates progressively, so it always runs.
         let view_key = ViewKey {
             fractal: self.current_fractal.clone(),
-            center: self.camera.center,
-            zoom: self.camera.zoom,
-            rotation: self.camera.rotation,
-            max_iter: self.max_iter,
+            view,
             size: (gpu.surface_config.width, gpu.surface_config.height),
-            linked: self.linked_mode.then(|| (
-                self.julia_camera.center,
-                self.julia_camera.zoom,
-                self.julia_camera.rotation,
-                self.linked_julia_c,
-            )),
+            linked: self.linked_mode.then_some((julia_view, self.linked_julia_c)),
         };
         let needs_compute = is_buddhabrot
             || self.palette_dirty
             || self.rendered_view.as_ref() != Some(&view_key);
-
-        // Compute reference orbit for perturbation (Mandelbrot & Julia, when using f64)
-        let use_f64 = self.camera.zoom >= 5.0e3;
-        let fractal_id = self.current_fractal.type_id();
-        let ref_escape_iter = if is_buddhabrot {
-            // For Buddhabrot, use ref_escape_iter as frame seed
-            self.buddhabrot_seed
-        } else if !needs_compute {
-            // View unchanged: the orbit already on the GPU is still valid
-            self.last_uniforms.ref_escape_iter
-        } else if use_f64 && fractal_id == 0 {
-            // Mandelbrot: z_{n+1} = z_n^2 + c, z_0 = 0, c = center
-            let (orbit_data, escape_iter) = compute_reference_orbit(
-                self.camera.center.x,
-                self.camera.center.y,
-                self.max_iter,
-            );
-            compute.upload_orbit(&gpu.device, &gpu.queue, &orbit_data);
-            escape_iter
-        } else if use_f64 && fractal_id == 1 {
-            // Julia: z_{n+1} = z_n^2 + c, z_0 = center, c = fixed param
-            let (orbit_data, escape_iter) = compute_reference_orbit_julia(
-                self.camera.center.x,
-                self.camera.center.y,
-                params.c_real as f64,
-                params.c_imag as f64,
-                self.max_iter,
-            );
-            compute.upload_orbit(&gpu.device, &gpu.queue, &orbit_data);
-            escape_iter
-        } else {
-            self.max_iter
-        };
-
-        // Update uniforms
-        let mut uniforms = FractalUniforms::new(
-            [center_x_hi, center_y_hi],
-            zoom_hi,
-            self.camera.aspect_ratio(),
-            self.max_iter,
-            self.current_fractal.type_id(),
-            0, // color_scheme no longer used by shaders (LUT-based)
-            params.c_real,
-            params.c_imag,
-            [center_x_lo, center_y_lo],
-            zoom_lo,
-            pixel_step_x,
-            pixel_step_y,
-            ref_escape_iter,
-            self.camera.rotation as f32,
-        );
-
-        // For Buddhabrot, pass screen dimensions and sample count through _pad2
-        if is_buddhabrot {
-            uniforms._pad2[0] = gpu.surface_config.width;
-            uniforms._pad2[1] = gpu.surface_config.height;
-            uniforms._pad2[2] = compute.accum_sample_count;
-        }
-
-        self.current_fractal.prepare_uniforms(&mut uniforms, gpu.surface_config.width, gpu.surface_config.height);
-
-        compute.update_uniforms(&gpu.queue, &uniforms);
-        self.last_uniforms = uniforms;
 
         // Upload palette LUT if dirty
         if self.palette_dirty {
@@ -490,63 +488,19 @@ impl<'window> App<'window> {
                 label: Some("Frame Command Encoder"),
             });
 
-        // Dispatch compute shader with current fractal type
-        // Buddhabrot uses a separate two-pass accumulation pipeline
+        // Compute the fractal. Buddhabrot uses its own two-pass accumulation pipeline;
+        // everything else is one per-pixel pass that picks its precision from the zoom.
         if is_buddhabrot && !self.linked_mode {
-            compute.dispatch_buddhabrot(
-                &gpu.device,
-                &mut encoder,
-                gpu.surface_config.width,
-                gpu.surface_config.height,
-            );
+            compute.render_buddhabrot(&gpu.device, &gpu.queue, &mut encoder, &view, self.buddhabrot_seed);
             // Increment seed for next frame's random samples
             self.buddhabrot_seed = self.buddhabrot_seed.wrapping_add(1);
         } else if needs_compute {
-            // Auto-switch to f64 emulated precision at high zoom levels
-            compute.dispatch(
-                &gpu.device,
-                &mut encoder,
-                gpu.surface_config.width,
-                gpu.surface_config.height,
-                &self.current_fractal,
-                self.camera.zoom,
-            );
+            compute.render_main(&gpu.device, &gpu.queue, &mut encoder, &self.current_fractal, &view);
         }
 
-        // In linked mode, also dispatch Julia compute
+        // In linked mode, also compute the Julia side
         if self.linked_mode && needs_compute {
-            // Build Julia uniforms from julia_camera
-            let (jc_x_hi, jc_x_lo) = ds_split(self.julia_camera.center.x);
-            let (jc_y_hi, jc_y_lo) = ds_split(self.julia_camera.center.y);
-            let (jz_hi, jz_lo) = ds_split(self.julia_camera.zoom);
-            let j_screen_height = gpu.surface_config.height as f64;
-            let j_pixel_step_x = (1.0 / (self.julia_camera.zoom * j_screen_height)) as f32;
-            let j_pixel_step_y = (-1.0 / (self.julia_camera.zoom * j_screen_height)) as f32;
-
-            let julia_uniforms = FractalUniforms::new(
-                [jc_x_hi, jc_y_hi],
-                jz_hi,
-                self.julia_camera.aspect_ratio(),
-                self.max_iter,
-                1, // Julia type_id
-                0,
-                self.linked_julia_c.x,
-                self.linked_julia_c.y,
-                [jc_x_lo, jc_y_lo],
-                jz_lo,
-                j_pixel_step_x,
-                j_pixel_step_y,
-                self.max_iter, // ref_escape_iter
-                self.julia_camera.rotation as f32,
-            );
-            compute.update_julia_uniforms(&gpu.queue, &julia_uniforms);
-            compute.dispatch_julia(
-                &gpu.device,
-                &mut encoder,
-                gpu.surface_config.width,
-                gpu.surface_config.height,
-                self.julia_camera.zoom,
-            );
+            compute.render_julia(&gpu.device, &gpu.queue, &mut encoder, self.linked_julia_c, &julia_view);
         }
 
         // Render fractal to surface
@@ -621,18 +575,8 @@ impl<'window> App<'window> {
         // Process pending video recording
         if let Some(settings) = self.pending_record.take() {
             self.recording_state.is_recording = true;
-            let palette = self.current_color.get_palette();
-            let lut = palette.generate_lut();
-            match export::record_video(
-                &gpu.device,
-                &gpu.queue,
-                &self.current_fractal,
-                &self.last_uniforms,
-                &settings,
-                self.camera.center,
-                self.camera.zoom,
-                &lut,
-            ) {
+            let lut = self.current_color.get_palette().generate_lut();
+            match export::record_video(&gpu.device, &gpu.queue, &self.current_fractal, &view, &settings, &lut) {
                 Ok(filename) => log::info!("Video saved: {}", filename),
                 Err(e) => log::error!("Video recording failed: {}", e),
             }
@@ -641,45 +585,12 @@ impl<'window> App<'window> {
 
         // Process pending export
         if let Some(resolution) = self.pending_export.take() {
-            let filename = export::generate_filename(
-                self.current_fractal.name(),
-                &resolution,
-            );
-
-            let palette = self.current_color.get_palette();
-            let lut = palette.generate_lut();
-
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let path = std::path::Path::new("export").join(&filename);
-                match export::export_png(
-                    &gpu.device,
-                    &gpu.queue,
-                    &self.current_fractal,
-                    &self.last_uniforms,
-                    resolution,
-                    &path,
-                    &lut,
-                ) {
-                    Ok(()) => log::info!("Export saved: {}", filename),
-                    Err(e) => log::error!("Export failed: {}", e),
-                }
-            }
-
-            #[cfg(target_arch = "wasm32")]
-            {
-                match export::export_png(
-                    &gpu.device,
-                    &gpu.queue,
-                    &self.current_fractal,
-                    &self.last_uniforms,
-                    resolution,
-                    &filename,
-                    &lut,
-                ) {
-                    Ok(()) => log::info!("Export saved: {}", filename),
-                    Err(e) => log::error!("Export failed: {}", e),
-                }
+            let filename = export::generate_filename(self.current_fractal.name(), &resolution);
+            let lut = self.current_color.get_palette().generate_lut();
+            let result =
+                export::export_png(&gpu.device, &gpu.queue, &self.current_fractal, &view, resolution, &filename, &lut);
+            if let Err(e) = result {
+                log::error!("Export failed: {}", e);
             }
         }
 
@@ -725,8 +636,8 @@ impl<'window> App<'window> {
 
                 // Update render pipeline bind groups
                 if let Some(ref mut render) = self.render {
-                    render.update_texture(&gpu.device, &compute.texture_view);
-                    render.update_julia_texture(&gpu.device, &compute.julia_texture_view);
+                    render.update_texture(&gpu.device, &compute.main.view);
+                    render.update_julia_texture(&gpu.device, &compute.julia.view);
                 }
             }
         }
@@ -875,58 +786,11 @@ impl<'window> App<'window> {
         }
 
         match event.logical_key {
-            // Switch to Mandelbrot
-            Key::Character(ref c) if c == "1" => {
-                self.current_fractal = FractalType::Mandelbrot;
-                self.camera.center = self.current_fractal.default_center();
-                self.camera.zoom = self.current_fractal.default_zoom();
-                log::info!("Switched to: {}", self.current_fractal.name());
-            }
-            // Switch to Julia
-            Key::Character(ref c) if c == "2" => {
-                self.current_fractal = FractalType::Julia {
-                    c: Vec2::new(-0.7, 0.27015),
-                };
-                self.camera.center = self.current_fractal.default_center();
-                self.camera.zoom = self.current_fractal.default_zoom();
-                log::info!("Switched to: {}", self.current_fractal.name());
-            }
-            // Switch to Burning Ship
-            Key::Character(ref c) if c == "3" => {
-                self.current_fractal = FractalType::BurningShip;
-                self.camera.center = self.current_fractal.default_center();
-                self.camera.zoom = self.current_fractal.default_zoom();
-                log::info!("Switched to: {}", self.current_fractal.name());
-            }
-            // Switch to Tricorn
-            Key::Character(ref c) if c == "4" => {
-                self.current_fractal = FractalType::Tricorn;
-                self.camera.center = self.current_fractal.default_center();
-                self.camera.zoom = self.current_fractal.default_zoom();
-                log::info!("Switched to: {}", self.current_fractal.name());
-            }
-            // Switch to Buddhabrot
-            Key::Character(ref c) if c == "5" => {
-                self.current_fractal = FractalType::Buddhabrot;
-                self.camera.center = self.current_fractal.default_center();
-                self.camera.zoom = self.current_fractal.default_zoom();
-                log::info!("Switched to: {}", self.current_fractal.name());
-            }
-            // Switch to Nova
-            Key::Character(ref c) if c == "6" => {
-                self.current_fractal = FractalType::Nova {
-                    c: Vec2::new(1.0, 0.0),
-                };
-                self.camera.center = self.current_fractal.default_center();
-                self.camera.zoom = self.current_fractal.default_zoom();
-                log::info!("Switched to: {}", self.current_fractal.name());
-            }
-            // Switch to Golden-Silver Gasket
-            Key::Character(ref c) if c == "7" => {
-                self.current_fractal = FractalType::GoldenSilver;
-                self.camera.center = self.current_fractal.default_center();
-                self.camera.zoom = self.current_fractal.default_zoom();
-                log::info!("Switched to: {}", self.current_fractal.name());
+            // Switch fractal: key n selects the n-th entry of FractalType::ALL
+            Key::Character(ref c) if fractal_for_key(c).is_some() => {
+                if let Some(fractal) = fractal_for_key(c) {
+                    self.select_fractal(fractal);
+                }
             }
             // Reset view
             Key::Character(ref c) if c == "r" || c == "R" => {
@@ -938,12 +802,12 @@ impl<'window> App<'window> {
             }
             // Increase iterations (+/=)
             Key::Character(ref c) if c == "=" || c == "+" => {
-                self.max_iter = (self.max_iter + 64).min(4096);
+                self.max_iter = (self.max_iter + 64).min(MAX_ITERATIONS);
                 log::info!("Max iterations: {}", self.max_iter);
             }
             // Decrease iterations (-)
             Key::Character(ref c) if c == "-" || c == "_" => {
-                self.max_iter = self.max_iter.saturating_sub(64).max(64);
+                self.max_iter = self.max_iter.saturating_sub(64).max(MIN_ITERATIONS);
                 log::info!("Max iterations: {}", self.max_iter);
             }
             // Pan with arrow keys
@@ -1048,59 +912,15 @@ impl<'window> App<'window> {
                 }
             }
             // Julia/Nova c parameter: J/L for c_real, I/K for c_imag
-            Key::Character(ref c) if c == "j" || c == "J" => {
-                match self.current_fractal {
-                    FractalType::Julia { ref mut c } => {
-                        c.x -= 0.01;
-                        log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
-                    }
-                    FractalType::Nova { ref mut c } => {
-                        c.x -= 0.01;
-                        log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
-                    }
-                    _ => {}
-                }
-            }
+            Key::Character(ref c) if c == "j" || c == "J" => self.nudge_c(Vec2::new(-0.01, 0.0)),
+            Key::Character(ref c) if c == "i" || c == "I" => self.nudge_c(Vec2::new(0.0, 0.01)),
+            Key::Character(ref c) if c == "k" || c == "K" => self.nudge_c(Vec2::new(0.0, -0.01)),
             Key::Character(ref c) if c == "l" || c == "L" => {
-                // In Julia/Nova mode, adjust c parameter; otherwise toggle linked mode
-                match self.current_fractal {
-                    FractalType::Julia { ref mut c } if !self.linked_mode => {
-                        c.x += 0.01;
-                        log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
-                    }
-                    FractalType::Nova { ref mut c } if !self.linked_mode => {
-                        c.x += 0.01;
-                        log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
-                    }
-                    _ => {
-                        self.toggle_linked_mode();
-                    }
-                }
-            }
-            Key::Character(ref c) if c == "i" || c == "I" => {
-                match self.current_fractal {
-                    FractalType::Julia { ref mut c } => {
-                        c.y += 0.01;
-                        log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
-                    }
-                    FractalType::Nova { ref mut c } => {
-                        c.y += 0.01;
-                        log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
-                    }
-                    _ => {}
-                }
-            }
-            Key::Character(ref c) if c == "k" || c == "K" => {
-                match self.current_fractal {
-                    FractalType::Julia { ref mut c } => {
-                        c.y -= 0.01;
-                        log::info!("Julia c = ({:.4}, {:.4})", c.x, c.y);
-                    }
-                    FractalType::Nova { ref mut c } => {
-                        c.y -= 0.01;
-                        log::info!("Nova c = ({:.4}, {:.4})", c.x, c.y);
-                    }
-                    _ => {}
+                // With a c parameter to adjust, L moves it; otherwise it toggles linked mode
+                if !self.linked_mode && self.current_fractal.c_mut().is_some() {
+                    self.nudge_c(Vec2::new(0.01, 0.0));
+                } else {
+                    self.toggle_linked_mode();
                 }
             }
             _ => {}
@@ -1176,7 +996,7 @@ impl<'window> App<'window> {
     }
 }
 
-impl ApplicationHandler for App<'_> {
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -1239,51 +1059,30 @@ impl ApplicationHandler for App<'_> {
         // Initialize camera
         self.camera.resize(UVec2::new(sw, sh));
 
-        // Initialize GPU (platform-specific async handling)
+        self.window = Some(window.clone());
+
+        // Initialize GPU. Native can simply block on it; the browser cannot, so there
+        // the result comes back to the event loop as an `AppEvent::GpuReady`.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (gpu, compute, render, ui) = pollster::block_on(Self::init_gpu(window.clone()));
-            self.ui = Some(ui);
-            self.gpu = Some(gpu);
-            self.compute = Some(compute);
-            self.render = Some(render);
-            self.window = Some(window);
-            log::info!("Application initialized successfully");
+            let result = pollster::block_on(Self::init_gpu(window));
+            self.user_event(event_loop, AppEvent::GpuReady(result.map(Box::new)));
         }
 
         #[cfg(target_arch = "wasm32")]
         {
-            self.window = Some(window.clone());
-            // On wasm we need spawn_local for async GPU init.
-            // Cast pointer through usize to satisfy 'static requirement.
-            // SAFETY: App is owned by spawn_app and lives for the program duration.
-            // The future resolves on the same single-threaded wasm executor.
-            let app_addr = self as *mut Self as usize;
+            let proxy = self.proxy.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let (mut gpu, compute, render, ui) = App::init_gpu(window.clone()).await;
-
-                // The surface may have been configured with 0x0 if the canvas
-                // wasn't laid out yet. Reconfigure with actual viewport size.
-                let size = window.inner_size();
-                if size.width > 0 && size.height > 0 {
-                    gpu.resize(size.width, size.height);
-                }
-
-                let app = unsafe { &mut *(app_addr as *mut App) };
-                if size.width > 0 && size.height > 0 {
-                    app.camera.resize(UVec2::new(size.width, size.height));
-                    app.julia_camera.resize(UVec2::new(size.width, size.height));
-                }
-                app.ui = Some(ui);
-                app.gpu = Some(gpu);
-                app.compute = Some(compute);
-                app.render = Some(render);
-                log::info!("Application initialized successfully (wasm), size: {}x{}", size.width, size.height);
-                // Auto-resize after ~1s to fix mobile viewport height
-                app.resize_countdown = 60;
-                // Trigger first redraw now that GPU is ready
-                window.request_redraw();
+                let result = App::init_gpu(window).await;
+                // Fails only if the event loop is already gone
+                let _ = proxy.send_event(AppEvent::GpuReady(result.map(Box::new)));
             });
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::GpuReady(result) => self.on_gpu_ready(event_loop, result),
         }
     }
 
@@ -1366,10 +1165,44 @@ impl ApplicationHandler for App<'_> {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.gpu_failed {
+            return;
+        }
         if let Some(ref window) = self.window {
             window.request_redraw();
         }
     }
+}
+
+/// The fractal a number key selects ("1" = first entry of `FractalType::ALL`)
+fn fractal_for_key(key: &str) -> Option<FractalType> {
+    let n: usize = key.parse().ok()?;
+    FractalType::ALL.get(n.checked_sub(1)?).cloned()
+}
+
+/// Tell the user about an error the app cannot recover from.
+///
+/// Browser: fills and reveals the `#fatal-error` overlay from index.html — otherwise
+/// all the user would see is a black canvas. Native: prints to stderr.
+fn show_fatal_error(message: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let overlay = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id("fatal-error"));
+        match overlay {
+            Some(overlay) => {
+                if let Some(text) = overlay.query_selector(".message").ok().flatten() {
+                    text.set_text_content(Some(message));
+                }
+                let _ = overlay.remove_attribute("hidden");
+            }
+            None => log::error!("No #fatal-error element to show: {message}"),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("Fractal Explorer cannot start: {message}");
 }
 
 fn main() {
@@ -1384,7 +1217,11 @@ fn main() {
 
     #[cfg(target_arch = "wasm32")]
     {
-        console_error_panic_hook::set_once();
+        // A panic leaves a dead canvas behind: log it, then say so on the page
+        std::panic::set_hook(Box::new(|info| {
+            console_error_panic_hook::hook(info);
+            show_fatal_error("Fractal Explorer hit an unexpected error and stopped. Reload the page to try again.");
+        }));
         console_log::init_with_level(log::Level::Info)
             .expect("Failed to initialize console_log");
     }
@@ -1392,20 +1229,20 @@ fn main() {
     log::info!("Starting Fractal Explorer...");
 
     // Create event loop
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::<AppEvent>::with_user_event().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
+    let app = App::new(event_loop.create_proxy());
 
     // Create app and run event loop (platform-specific)
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut app = App::new();
+        let mut app = app;
         event_loop.run_app(&mut app).unwrap();
     }
 
     #[cfg(target_arch = "wasm32")]
     {
         use winit::platform::web::EventLoopExtWebSys;
-        let app = App::new();
         event_loop.spawn_app(app);
     }
 }
