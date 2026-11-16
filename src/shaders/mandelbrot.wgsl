@@ -1,11 +1,15 @@
 /// Mandelbrot set iteration with smooth coloring
+// Bailout radius squared. Large, so the smooth iteration count is accurate and
+// matches the deep-zoom shader (no colour jump at the switch).
+const BAILOUT2: f32 = 256.0;
+
 fn mandelbrot(cx: f32, cy: f32) -> f32 {
     var zx: f32 = 0.0;
     var zy: f32 = 0.0;
     var iter: u32 = 0u;
 
     // Escape-time algorithm
-    while (iter < uniforms.max_iter && (zx * zx + zy * zy) < 4.0) {
+    while (iter < uniforms.max_iter && (zx * zx + zy * zy) < BAILOUT2) {
         let temp = zx * zx - zy * zy + cx;
         zy = 2.0 * zx * zy + cy;
         zx = temp;

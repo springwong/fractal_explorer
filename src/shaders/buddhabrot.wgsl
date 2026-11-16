@@ -10,9 +10,9 @@ fn pcg_hash(input: u32) -> u32 {
     return (word >> 22u) ^ word;
 }
 
-// Generate a float in [0, 1) from a u32
+// Generate a float in [0, 1) from a u32 (top 24 bits, so it can never round up to 1)
 fn rand_float(hash: u32) -> f32 {
-    return f32(hash) / 4294967296.0;
+    return f32(hash >> 8u) / 16777216.0;
 }
 
 @compute @workgroup_size(256)
@@ -25,16 +25,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    // Generate unique seed from thread ID and frame seed
+    // Two independently keyed hashes of (thread, frame) give the two coordinates, so
+    // samples only repeat once the 32-bit frame counter wraps. (Chaining one 32-bit
+    // state instead would tie cy to cx and replay whole frames within minutes.)
     let thread_id = id.x;
-    var seed = pcg_hash(thread_id ^ (uniforms.ref_escape_iter * 1664525u + 1013904223u));
+    let frame = uniforms.ref_escape_iter;
+    let hash_x = pcg_hash(thread_id ^ pcg_hash(frame));
+    let hash_y = pcg_hash((thread_id * 2654435761u) ^ pcg_hash(frame ^ 0x9E3779B9u));
 
-    // Generate random c in a region covering the Mandelbrot set with margin
-    // Using [-2.5, 1.5] x [-2.0, 2.0] to push the sampling boundary well outside typical views
-    seed = pcg_hash(seed);
-    let cx = rand_float(seed) * 4.0 - 2.5;
-    seed = pcg_hash(seed);
-    let cy = rand_float(seed) * 4.0 - 2.0;
+    // Random c in a region covering the Mandelbrot set with margin:
+    // [-2.5, 1.5] x [-2.0, 2.0] pushes the sampling boundary well outside typical views
+    let cx = rand_float(hash_x) * 4.0 - 2.5;
+    let cy = rand_float(hash_y) * 4.0 - 2.0;
 
     // First pass: iterate to check if orbit escapes
     var zx: f32 = 0.0;

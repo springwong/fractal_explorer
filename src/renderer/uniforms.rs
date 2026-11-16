@@ -104,30 +104,41 @@ pub fn ds_split(value: f64) -> (f32, f32) {
     (hi, lo)
 }
 
-/// Compute a reference orbit of z_{n+1} = z_n^2 + c in f64 (for perturbation theory).
+/// Compute a reference orbit in f64 (for perturbation theory).
 ///
-/// Mandelbrot uses z_0 = 0 and c = view centre; Julia uses z_0 = view centre and its
-/// fixed c. Returns (orbit_data, escape_iter): orbit_data holds max_iter + 1 [zx, zy]
-/// f32 pairs (zero-padded after an escape), and escape_iter is when the reference
-/// escapes (or max_iter if it stays bounded).
-pub fn reference_orbit(z0: DVec2, c: DVec2, max_iter: u32) -> (Vec<f32>, u32) {
+/// Starts at `z0` and applies `step` up to `max_iter` times. The orbit ends early when
+/// `step` returns `None` (the map is undefined there) or |z|² exceeds `escape_radius2`;
+/// the escaping point itself is still stored.
+///
+/// Returns (orbit_data, last): orbit_data holds max_iter + 1 [zx, zy] f32 pairs
+/// (zero-padded after the end) and `last` is the index of the last valid entry.
+pub fn reference_orbit(
+    z0: DVec2,
+    max_iter: u32,
+    escape_radius2: f64,
+    step: impl Fn(DVec2) -> Option<DVec2>,
+) -> (Vec<f32>, u32) {
     let len = (max_iter as usize + 1) * 2;
     let mut orbit = Vec::with_capacity(len);
     let mut z = z0;
-    let mut escape_iter = max_iter;
+    let mut last = max_iter;
 
     orbit.extend([z.x as f32, z.y as f32]);
     for i in 0..max_iter {
-        z = DVec2::new(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y);
+        let Some(next) = step(z) else {
+            last = i;
+            break;
+        };
+        z = next;
         orbit.extend([z.x as f32, z.y as f32]);
-        if z.length_squared() > 1e10 {
-            escape_iter = i + 1;
+        if z.length_squared() > escape_radius2 {
+            last = i + 1;
             break;
         }
     }
     orbit.resize(len, 0.0);
 
-    (orbit, escape_iter)
+    (orbit, last)
 }
 
 // Compile-time assertion for size (must match WGSL layout)
@@ -186,22 +197,25 @@ mod tests {
         assert_eq!(span as usize, std::mem::size_of::<FractalUniforms>());
     }
 
-    /// The orbit always has max_iter + 1 entries, and stops advancing once it escapes.
+    /// The orbit always has max_iter + 1 entries, and stops advancing once it ends.
     #[test]
     fn reference_orbit_shape() {
+        let quadratic = |c: DVec2| move |z: DVec2| Some(DVec2::new(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y));
+
         // c = 0: stays at the origin forever
-        let (orbit, escape) = reference_orbit(DVec2::ZERO, DVec2::ZERO, 32);
-        assert_eq!((orbit.len(), escape), (66, 32));
+        let (orbit, last) = reference_orbit(DVec2::ZERO, 32, 1e10, quadratic(DVec2::ZERO));
+        assert_eq!((orbit.len(), last), (66, 32));
         assert!(orbit.iter().all(|v| *v == 0.0));
 
         // c = 2: 0, 2, 6, 38, 1446, 2090918 -> |z|^2 > 1e10 at step 5
-        let (orbit, escape) = reference_orbit(DVec2::ZERO, DVec2::new(2.0, 0.0), 32);
-        assert_eq!((orbit.len(), escape), (66, 5));
+        let (orbit, last) = reference_orbit(DVec2::ZERO, 32, 1e10, quadratic(DVec2::new(2.0, 0.0)));
+        assert_eq!((orbit.len(), last), (66, 5));
         assert_eq!(&orbit[..12], &[0.0, 0.0, 2.0, 0.0, 6.0, 0.0, 38.0, 0.0, 1446.0, 0.0, 2090918.0, 0.0]);
         assert!(orbit[12..].iter().all(|v| *v == 0.0));
 
-        // Julia: starts at z_0
-        let (orbit, _) = reference_orbit(DVec2::new(0.25, -0.5), DVec2::ZERO, 4);
-        assert_eq!(&orbit[..2], &[0.25, -0.5]);
+        // Starts at z_0; an undefined step ends it on the last defined point
+        let (orbit, last) = reference_orbit(DVec2::new(0.25, -0.5), 4, 1e10, |z| (z.x < 1.0).then_some(z + 0.5));
+        assert_eq!(&orbit[..6], &[0.25, -0.5, 0.75, 0.0, 1.25, 0.5]);
+        assert_eq!(last, 2);
     }
 }

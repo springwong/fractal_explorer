@@ -1,12 +1,16 @@
 /// Burning Ship fractal iteration with smooth coloring
 /// Uses absolute values: z = (|Re(z)| + i|Im(z)|)² + c
+// Bailout radius squared. Large, so the smooth iteration count is accurate and
+// matches the deep-zoom shader (no colour jump at the switch).
+const BAILOUT2: f32 = 256.0;
+
 fn burning_ship(cx: f32, cy: f32) -> f32 {
     var zx: f32 = 0.0;
     var zy: f32 = 0.0;
     var iter: u32 = 0u;
 
     // Escape-time algorithm with absolute values
-    while (iter < uniforms.max_iter && (zx * zx + zy * zy) < 4.0) {
+    while (iter < uniforms.max_iter && (zx * zx + zy * zy) < BAILOUT2) {
         let abs_zx = abs(zx);
         let abs_zy = abs(zy);
         let temp = abs_zx * abs_zx - abs_zy * abs_zy + cx;

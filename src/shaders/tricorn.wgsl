@@ -1,12 +1,16 @@
 /// Tricorn (Mandelbar) fractal iteration with smooth coloring
 /// Uses conjugate: z = conj(z)² + c = (Re(z) - i*Im(z))² + c
+// Bailout radius squared. Large, so the smooth iteration count is accurate and
+// matches the deep-zoom shader (no colour jump at the switch).
+const BAILOUT2: f32 = 256.0;
+
 fn tricorn(cx: f32, cy: f32) -> f32 {
     var zx: f32 = 0.0;
     var zy: f32 = 0.0;
     var iter: u32 = 0u;
 
     // Escape-time algorithm with conjugate
-    while (iter < uniforms.max_iter && (zx * zx + zy * zy) < 4.0) {
+    while (iter < uniforms.max_iter && (zx * zx + zy * zy) < BAILOUT2) {
         // Conjugate: (zx - i*zy)² = zx² - zy² - 2i*zx*zy
         let temp = zx * zx - zy * zy + cx;
         zy = -2.0 * zx * zy + cy; // Note the negative sign

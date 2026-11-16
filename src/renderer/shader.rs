@@ -2,7 +2,7 @@
 //!
 //! WGSL has no `#include`, so every compute shader is put together here from shared
 //! modules plus one fractal-specific body. The uniform block, the palette lookup, the
-//! pixel -> plane mapping and the double-single arithmetic each exist in exactly one
+//! pixel -> plane mapping and the rebasing perturbation loop each exist in exactly one
 //! file under `src/shaders/`.
 
 const COMMON: &str = include_str!("../shaders/common.wgsl");
@@ -10,18 +10,19 @@ const BINDINGS_STANDARD: &str = include_str!("../shaders/bindings_standard.wgsl"
 const BINDINGS_ORBIT: &str = include_str!("../shaders/bindings_orbit.wgsl");
 const PALETTE: &str = include_str!("../shaders/palette.wgsl");
 const VIEW: &str = include_str!("../shaders/view.wgsl");
-const DOUBLE_SINGLE: &str = include_str!("../shaders/double_single.wgsl");
+const REBASING: &str = include_str!("../shaders/rebasing.wgsl");
 
 /// Which shared modules (and which bind group layout) a fractal shader body needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShaderKind {
     /// Plain f32 maths. Bindings: uniforms, output texture, palette.
     Standard,
-    /// Double-single maths on the GPU. Same bindings as `Standard`.
-    EmulatedDouble,
-    /// Perturbation around a reference orbit computed on the CPU in f64.
-    /// Bindings: uniforms, output texture, reference orbit, palette.
+    /// Perturbation around a reference orbit computed on the CPU in f64; the body
+    /// runs its own loop. Bindings: uniforms, output texture, reference orbit, palette.
     Perturbation,
+    /// Perturbation using the shared rebasing loop (`rebasing.wgsl`); the body only
+    /// supplies `delta_step`. Same bindings as `Perturbation`.
+    RebasingPerturbation,
 }
 
 /// A per-pixel fractal compute shader: a fractal-specific body plus the shared
@@ -40,27 +41,27 @@ impl Shader {
         Self { body, kind: ShaderKind::Standard }
     }
 
-    /// Shader using emulated double precision
-    pub const fn emulated_double(body: &'static str) -> Self {
-        Self { body, kind: ShaderKind::EmulatedDouble }
-    }
-
     /// Shader using perturbation theory with a CPU reference orbit
     pub const fn perturbation(body: &'static str) -> Self {
         Self { body, kind: ShaderKind::Perturbation }
     }
 
+    /// Shader supplying `delta_step` for the shared rebasing perturbation loop
+    pub const fn rebasing_perturbation(body: &'static str) -> Self {
+        Self { body, kind: ShaderKind::RebasingPerturbation }
+    }
+
     /// Whether the shader reads a reference orbit (and so needs the orbit bind group)
     pub fn uses_orbit(&self) -> bool {
-        self.kind == ShaderKind::Perturbation
+        matches!(self.kind, ShaderKind::Perturbation | ShaderKind::RebasingPerturbation)
     }
 
     /// The complete WGSL source
     pub fn source(&self) -> String {
         let modules: &[&str] = match self.kind {
             ShaderKind::Standard => &[COMMON, BINDINGS_STANDARD, PALETTE, VIEW],
-            ShaderKind::EmulatedDouble => &[COMMON, BINDINGS_STANDARD, PALETTE, VIEW, DOUBLE_SINGLE],
             ShaderKind::Perturbation => &[COMMON, BINDINGS_ORBIT, PALETTE, VIEW],
+            ShaderKind::RebasingPerturbation => &[COMMON, BINDINGS_ORBIT, PALETTE, VIEW, REBASING],
         };
         assemble(modules, self.body)
     }

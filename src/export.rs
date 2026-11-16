@@ -504,7 +504,8 @@ mod tests {
             DVec2::new(-1.4679944402079477, -0.12282724805880647),
             DVec2::new(-1.3663993401074568, -0.008939771987894548),
             DVec2::ZERO,
-            DVec2::new(-1.5, -0.8154231018505872),
+            // Repelling fixed point of the default Nova map
+            DVec2::new(-0.051901701367768276, 0.5652358516771708),
             // The gasket repeats at every scale around the origin
             DVec2::new(2.0e-6, 1.0e-6),
         ];
@@ -535,6 +536,230 @@ mod tests {
                 );
                 if let Ok(dir) = std::env::var("FRACTAL_DUMP_DIR") {
                     std::fs::write(format!("{dir}/{}_{i}.rgba", fractal.id()), &pixels).unwrap();
+                }
+            }
+        }
+    }
+
+    // ---- Accuracy against a CPU f64 reference ---------------------------------------
+
+    /// Smooth escape time as the shaders define it (bailout radius² 256), in f64.
+    fn escape_time(z0: DVec2, n: u32, step: impl Fn(DVec2) -> DVec2) -> f64 {
+        let mut z = z0;
+        for i in 0..n {
+            let m = z.length_squared();
+            if m > 256.0 {
+                return i as f64 + 1.0 - (m.log2() / 2.0).log2();
+            }
+            z = step(z);
+        }
+        0.0
+    }
+
+    /// The Nova shader's value in f64.
+    fn nova_value(z0: DVec2, c: DVec2, n: u32) -> f64 {
+        let mut z = z0;
+        let mut i = 0;
+        while i < n {
+            if z.length_squared() > 1.0e8 {
+                break;
+            }
+            let z2 = DVec2::new(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y);
+            let m = z2.length_squared();
+            if 9.0 * m < 1.0e-20 {
+                break;
+            }
+            let next = z * (2.0 / 3.0) + DVec2::new(z2.x, -z2.y) / (3.0 * m) + c;
+            let d2 = (next - z).length_squared();
+            z = next;
+            i += 1;
+            if d2 < 1.0e-6 {
+                return (i as f64 - ((d2 + 1.0e-20).log2() / 1.0e-6f64.log2()).log2()).max(0.0);
+            }
+        }
+        if i == n { 0.0 } else { i as f64 }
+    }
+
+    /// The f64 twin of each per-pixel fractal: its value at plane point `p`
+    fn cpu_value(fractal: &FractalType, p: DVec2, n: u32) -> f64 {
+        let c = fractal.c().as_dvec2();
+        match fractal {
+            FractalType::Mandelbrot => {
+                escape_time(DVec2::ZERO, n, |z| DVec2::new(z.x * z.x - z.y * z.y + p.x, 2.0 * z.x * z.y + p.y))
+            }
+            FractalType::BurningShip => {
+                escape_time(DVec2::ZERO, n, |z| DVec2::new(z.x * z.x - z.y * z.y + p.x, 2.0 * (z.x * z.y).abs() + p.y))
+            }
+            FractalType::Tricorn => {
+                escape_time(DVec2::ZERO, n, |z| DVec2::new(z.x * z.x - z.y * z.y + p.x, -2.0 * z.x * z.y + p.y))
+            }
+            FractalType::Julia { .. } => {
+                escape_time(p, n, |z| DVec2::new(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y))
+            }
+            FractalType::Nova { .. } => nova_value(p, c, n),
+            FractalType::Buddhabrot | FractalType::GoldenSilver => unreachable!(),
+        }
+    }
+
+    /// A point on an edge between two classes of points, to f64 precision: scans the
+    /// box `lo..hi` for two neighbouring grid points that differ, then bisects.
+    fn find_edge<T: PartialEq>(class: impl Fn(DVec2) -> T, lo: DVec2, hi: DVec2) -> DVec2 {
+        const GRID: u32 = 23;
+        let at = |i: u32, j: u32| lo + (hi - lo) * DVec2::new(i as f64, j as f64) / GRID as f64;
+        let (mut a, mut b) = (0..GRID)
+            .flat_map(|j| (0..GRID).map(move |i| (i, j)))
+            .map(|(i, j)| (at(i, j), at(i + 1, j)))
+            .find(|(a, b)| class(*a) != class(*b))
+            .expect("the box contains an edge");
+        let class_a = class(a);
+        for _ in 0..80 {
+            let mid = (a + b) / 2.0;
+            if class(mid) == class_a {
+                a = mid;
+            } else {
+                b = mid;
+            }
+        }
+        a
+    }
+
+    /// How a GPU render compares with the CPU reference
+    struct Accuracy {
+        /// % of pixels on the wrong side of inside / outside
+        wrong_side: f64,
+        /// % of outside pixels more than one iteration away from the reference
+        wrong_value: f64,
+        /// Number of different palette entries in the picture
+        levels: usize,
+    }
+
+    /// Render `fractal` and compare each pixel with the f64 reference. A pixel only
+    /// counts as wrong if it matches neither its own reference value nor that of any
+    /// neighbour: right at a fractal's edge, values legitimately change within a pixel.
+    fn measure(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        fractal: &FractalType,
+        center: DVec2,
+        zoom: f64,
+        max_iter: u32,
+    ) -> Accuracy {
+        let (w, h) = (160u32, 120u32);
+        // Palette index in red; green tells outside (255) from inside (0)
+        let mut lut = [0u8; 1024];
+        for i in 0..256 {
+            lut[i * 4..i * 4 + 4].copy_from_slice(&[i as u8, 255, 0, 255]);
+        }
+        let view = View { center, zoom, rotation: 0.0, max_iter };
+        let mut offscreen = Offscreen::new(device, queue, w, h, &lut);
+        offscreen.render(device, queue, fractal, &view).unwrap();
+        let gpu = offscreen.read_pixels(device).unwrap();
+
+        let reference: Vec<f64> = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f64, (i / w) as f64);
+                let offset = DVec2::new(x - w as f64 / 2.0, -(y - h as f64 / 2.0)) / (h as f64 * zoom);
+                cpu_value(fractal, center + offset, max_iter)
+            })
+            .collect();
+
+        let (mut wrong_side, mut wrong_value) = (0, 0);
+        let mut levels = std::collections::HashSet::new();
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let pixel = &gpu[((y as u32 * w + x as u32) * 4) as usize..][..4];
+                let gpu_inside = pixel[1] == 0;
+                levels.insert((pixel[0], pixel[1]));
+                let (mut side_ok, mut value_ok) = (false, false);
+                for (dx, dy) in (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (dx, dy))) {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        continue;
+                    }
+                    let t = reference[(ny as u32 * w + nx as u32) as usize];
+                    if (t == 0.0) != gpu_inside {
+                        continue;
+                    }
+                    side_ok = true;
+                    // One iteration is 0.05 of the palette = 12.75 entries
+                    let want = ((t * 0.05).fract() * 255.0) as i32;
+                    let distance = (want - pixel[0] as i32).rem_euclid(255);
+                    value_ok |= gpu_inside || distance.min(255 - distance) <= 13;
+                }
+                if !side_ok {
+                    wrong_side += 1;
+                } else if !value_ok {
+                    wrong_value += 1;
+                }
+            }
+        }
+        let percent = |count: i32| count as f64 * 100.0 / (w * h) as f64;
+        Accuracy { wrong_side: percent(wrong_side), wrong_value: percent(wrong_value), levels: levels.len() }
+    }
+
+    /// Deep zoom must show the same picture an f64 CPU render does, for every fractal
+    /// with a deep-zoom shader and all the way down. This is what catches a shader that
+    /// silently degrades to f32 (blocky, then one flat colour) or drifts off the true c.
+    #[test]
+    fn deep_zoom_matches_f64_reference() {
+        let Some((device, queue)) = headless_device() else {
+            eprintln!("no GPU adapter available; skipping");
+            return;
+        };
+        let n = 400;
+        let julia = FractalType::ALL[1].clone();
+        let nova = FractalType::ALL[5].clone();
+        let (julia_c, nova_c) = (julia.c().as_dvec2(), nova.c().as_dvec2());
+        let cmul = |a: DVec2, b: DVec2| DVec2::new(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+        let cdiv = |a: DVec2, b: DVec2| DVec2::new(a.x * b.x + a.y * b.y, a.y * b.x - a.x * b.y) / b.length_squared();
+        // Newton's method for a complex root of `f`, given f and f'
+        let root = |start: DVec2, f: &dyn Fn(DVec2) -> (DVec2, DVec2)| {
+            (0..100).fold(start, |z, _| {
+                let (value, slope) = f(z);
+                z - cdiv(value, slope)
+            })
+        };
+
+        // Each centre sits on the fractal itself, so there is structure at every zoom.
+        // Escape-time sets: a point on the edge of the interior.
+        let inside = |f: FractalType| move |p: DVec2| cpu_value(&f, p, n) == 0.0;
+        let box_around = |c: DVec2, r: f64| (c - r, c + r);
+        let edge_of = |f: &FractalType, (lo, hi): (DVec2, DVec2)| find_edge(inside(f.clone()), lo, hi);
+        // Julia: the repelling fixed point of z² + c (z² - z + c = 0) lies on the set
+        let julia_point = root(DVec2::new(1.5, -0.1), &|z| (cmul(z, z) - z + julia_c, 2.0 * z - DVec2::X));
+        // Nova: a repelling fixed point of 2z/3 + 1/(3z²) + c (z³ - 3cz² - 1 = 0)
+        let nova_point = root(DVec2::new(-0.1, 0.6), &|z| {
+            let z2 = cmul(z, z);
+            (cmul(z2, z) - 3.0 * cmul(nova_c, z2) - DVec2::X, 3.0 * z2 - 6.0 * cmul(nova_c, z))
+        });
+        let cases = [
+            (FractalType::Mandelbrot, edge_of(&FractalType::Mandelbrot, box_around(DVec2::new(-0.75, 0.2), 0.2))),
+            // Around the period-3 minibrot on the needle
+            (FractalType::Mandelbrot, edge_of(&FractalType::Mandelbrot, box_around(DVec2::new(-1.7549, 0.0), 0.02))),
+            (julia, julia_point),
+            (FractalType::BurningShip, edge_of(&FractalType::BurningShip, box_around(DVec2::new(-0.5, -0.5), 1.5))),
+            // The small ship on the needle
+            (FractalType::BurningShip, edge_of(&FractalType::BurningShip, box_around(DVec2::new(-1.755, -0.03), 0.04))),
+            (FractalType::Tricorn, edge_of(&FractalType::Tricorn, box_around(DVec2::ZERO, 2.0))),
+            (nova, nova_point),
+        ];
+
+        for (fractal, center) in &cases {
+            for zoom in [1.0e2, 1.0e5, 1.0e8, 1.0e11] {
+                let a = measure(&device, &queue, fractal, *center, zoom, n);
+                let label = format!(
+                    "{} at ({}, {}) zoom {zoom:.0e}: wrong side {:.2}%, wrong value {:.2}%, {} levels",
+                    fractal.name(), center.x, center.y, a.wrong_side, a.wrong_value, a.levels
+                );
+                println!("{label}");
+                assert!(a.wrong_side < 5.0, "{label}");
+                if matches!(fractal, FractalType::BurningShip) {
+                    // The Burning Ship's fold makes slow orbits depend on the last bit of
+                    // every operation: f32 and f64 disagree on them at any zoom, even on
+                    // identical inputs. So check the picture keeps its detail instead.
+                    assert!(a.levels > 100, "{label}");
+                } else {
+                    assert!(a.wrong_value < 5.0, "{label}");
                 }
             }
         }

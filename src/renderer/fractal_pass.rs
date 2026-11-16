@@ -131,18 +131,20 @@ impl FractalPipelines {
         }
     }
 
-    /// The pipeline for `fractal` at `zoom` and whether it reads a reference orbit.
+    /// The pipeline for `fractal` at `zoom` on a target `height` pixels high, and
+    /// whether it reads a reference orbit.
     /// Errors for fractals that are not rendered per pixel.
     fn get(
         &mut self,
         device: &wgpu::Device,
         fractal: &FractalType,
         zoom: f64,
+        height: u32,
     ) -> Result<(&wgpu::ComputePipeline, bool), String> {
         let shader = fractal
-            .shader(zoom)
+            .shader(zoom, height)
             .ok_or_else(|| format!("{} is not rendered by a per-pixel shader", fractal.name()))?;
-        let deep = is_deep_zoom(zoom);
+        let deep = is_deep_zoom(zoom, height);
         let layout = if shader.uses_orbit() { &self.orbit_pipeline_layout } else { &self.standard_pipeline_layout };
 
         let pipeline = self.cache.entry((fractal.id(), deep)).or_insert_with(|| {
@@ -257,7 +259,7 @@ impl FractalTarget {
         if view.max_iter > MAX_ITERATIONS {
             return Err(format!("max_iter {} exceeds the supported {MAX_ITERATIONS}", view.max_iter));
         }
-        let (pipeline, uses_orbit) = pipelines.get(device, fractal, view.zoom)?;
+        let (pipeline, uses_orbit) = pipelines.get(device, fractal, view.zoom, self.height)?;
 
         let mut uniforms = FractalUniforms::for_view(fractal, view, self.width, self.height);
         if uses_orbit {
@@ -277,6 +279,6 @@ impl FractalTarget {
         pass.set_bind_group(0, if uses_orbit { &self.orbit_bind_group } else { &self.standard_bind_group }, &[]);
         pass.dispatch_workgroups(workgroups(self.width), workgroups(self.height), 1);
 
-        Ok(is_deep_zoom(view.zoom))
+        Ok(is_deep_zoom(view.zoom, self.height))
     }
 }

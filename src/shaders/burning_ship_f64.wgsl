@@ -1,38 +1,24 @@
-// Burning Ship fractal with emulated double precision (2x f32) for deep zoom
-// Arithmetic comes from double_single.wgsl.
+// Burning Ship, deep zoom: perturbation with rebasing (see rebasing.wgsl).
+// z -> (|x| + i|y|)² + c, i.e. x' = x² - y² + cx, y' = 2|xy| + cy
 
-/// Burning Ship iteration with full double-single precision
-fn burning_ship_ds(cx_hi: f32, cx_lo: f32, cy_hi: f32, cy_lo: f32) -> f32 {
-    var zrh: f32 = 0.0; var zrl: f32 = 0.0;
-    var zih: f32 = 0.0; var zil: f32 = 0.0;
-    var iter: u32 = 0u;
-
-    while (iter < uniforms.max_iter) {
-        let mag2 = zrh * zrh + zih * zih;
-        if mag2 > 4.0 { break; }
-
-        let abs_zr = ds_abs(zrh, zrl);
-        let abs_zi = ds_abs(zih, zil);
-
-        let zr_sq = ds_mul(abs_zr.x, abs_zr.y, abs_zr.x, abs_zr.y);
-        let zi_sq = ds_mul(abs_zi.x, abs_zi.y, abs_zi.x, abs_zi.y);
-        let zr_zi = ds_mul(abs_zr.x, abs_zr.y, abs_zi.x, abs_zi.y);
-        let two_zr_zi_hi = zr_zi.x + zr_zi.x;
-        let two_zr_zi_lo = zr_zi.y + zr_zi.y;
-
-        let diff = ds_add(zr_sq.x, zr_sq.y, -zi_sq.x, -zi_sq.y);
-        let new_zr = ds_add(diff.x, diff.y, cx_hi, cx_lo);
-        let new_zi = ds_add(two_zr_zi_hi, two_zr_zi_lo, cy_hi, cy_lo);
-
-        zrh = new_zr.x; zrl = new_zr.y;
-        zih = new_zi.x; zil = new_zi.y;
-        iter += 1u;
+/// |c + d| - |c| without the cancellation the direct form has when |d| << |c|
+fn diff_abs(c: f32, d: f32) -> f32 {
+    if c >= 0.0 {
+        if c + d >= 0.0 { return d; }
+        return -(2.0 * c + d);
     }
+    if c + d > 0.0 { return 2.0 * c + d; }
+    return -d;
+}
 
-    if iter == uniforms.max_iter { return 0.0; }
-    let log_zn = log2(zrh * zrh + zih * zih) / 2.0;
-    let nu = log2(log_zn / log2(2.0));
-    return f32(iter) + 1.0 - nu;
+fn delta_step(z_ref: vec2<f32>, w: vec2<f32>, dc: vec2<f32>) -> vec2<f32> {
+    // xy = XY + (X wy + wx Y + wx wy)
+    let xy_ref = z_ref.x * z_ref.y;
+    let xy_delta = z_ref.x * w.y + w.x * z_ref.y + w.x * w.y;
+    return vec2<f32>(
+        2.0 * (z_ref.x * w.x - z_ref.y * w.y) + (w.x * w.x - w.y * w.y) + dc.x,
+        2.0 * diff_abs(xy_ref, xy_delta) + dc.y,
+    );
 }
 
 @compute @workgroup_size(16, 16)
@@ -40,7 +26,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(output_texture);
     if id.x >= dims.x || id.y >= dims.y { return; }
 
-    let c = pixel_to_plane_ds(id.xy, dims);
-    let smooth_val = burning_ship_ds(c.x, c.y, c.z, c.w);
+    let smooth_val = perturbed_escape_time(pixel_delta(id.xy, dims));
     textureStore(output_texture, vec2<i32>(id.xy), sample_palette(smooth_val));
 }

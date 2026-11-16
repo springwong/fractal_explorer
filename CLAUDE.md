@@ -80,10 +80,10 @@ fractal-explorer/
 │       ├── bindings_orbit.wgsl    # output texture + reference orbit + palette
 │       ├── palette.wgsl           # sample_palette()
 │       ├── view.wgsl              # pixel → 複數平面座標
-│       ├── double_single.wgsl     # emulated double 運算
+│       ├── rebasing.wgsl          # 帶 rebasing 的 perturbation 迴圈
 │       ├── fullscreen.wgsl        # Fullscreen quad
 │       ├── <fractal>.wgsl         # 各 fractal 的迭代函數 + main（f32）
-│       └── <fractal>_f64.wgsl     # 深度縮放版本（perturbation 或 emulated double）
+│       └── <fractal>_f64.wgsl     # 深度縮放版本（perturbation）
 ├── assets/
 │   └── palettes/
 └── tests/
@@ -109,7 +109,8 @@ pub struct FractalInfo {
     pub render: RenderMode,      // PerPixel { shader, deep_shader } | Accumulation
 }
 
-pub const DEEP_ZOOM_THRESHOLD: f64 = 5.0e3;   // 切換深度縮放 shader 的唯一門檻
+// 切換深度縮放 shader 的唯一門檻：zoom × 輸出高度（像素密度），唔係單睇 zoom
+pub const DEEP_ZOOM_PIXEL_DENSITY: f64 = 4.0e6;
 ```
 
 ### Shader 組合（`src/renderer/shader.rs`）
@@ -119,10 +120,10 @@ WGSL 冇 `#include`，所以由 `Shader::source()` 將共用模組同 fractal �
 | ShaderKind | 模組 |
 |------------|------|
 | `Standard` | common + bindings_standard + palette + view |
-| `EmulatedDouble` | 同上 + double_single |
-| `Perturbation` | common + bindings_orbit + palette + view |
+| `Perturbation` | common + bindings_orbit + palette + view（本體自己寫迴圈：Julia、Nova） |
+| `RebasingPerturbation` | 同上 + rebasing（本體只提供 `delta_step`：Mandelbrot、Burning Ship、Tricorn） |
 
-各 fractal 的 `.wgsl` 只寫迭代函數同 `main`，唔好再抄 `Uniforms`、`sample_palette` 或 ds 運算。
+各 fractal 的 `.wgsl` 只寫迭代函數同 `main`，唔好再抄 `Uniforms`、`sample_palette` 或 perturbation 迴圈。
 
 ### GPU Uniform 結構
 ```rust
@@ -332,20 +333,30 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 - [ ] WebAssembly 支援
 
 ### Phase 5：低優先級（Low Priority）
-- [ ] Burning Ship perturbation theory f64（目前使用 Dekker emulated double，精度有限）
-- [ ] Tricorn perturbation theory f64（目前使用 Dekker emulated double，精度有限）
+- [x] Burning Ship perturbation theory（取代 Dekker emulated double）
+- [x] Tricorn perturbation theory（取代 Dekker emulated double）
+- [x] Nova perturbation theory
 
 ---
 
 ## 精度問題
 
-f32 在縮放超過約 **1e6** 時會出現像素化失真，解決方案：
+f32 的極限係相鄰像素之間嘅間距：|c| 近 2 時 f32 數值相隔 2.4e-7，像素再密就會共用座標，
+畫面變格仔。所以切換門檻按 **zoom × 輸出高度** 計（`DEEP_ZOOM_PIXEL_DENSITY`）：
+1080p 約 zoom 3.7e3，8K 導出約 9e2。
 
-1. **f64 CPU fallback**：自動切換，簡單但較慢
-2. **Emulated double（GPU）**：兩個 f32 模擬 f64，性能損失約 4x
-3. **Perturbation Theory**：支援無限深度，最複雜
+過咗門檻全部用 **perturbation theory**：CPU 用 f64 計一條 reference orbit，GPU 每個像素
+只用 f32 追蹤同 reference 嘅偏差。
 
-建議：Phase 1-2 用 f32 → Phase 3 加 emulated double → Phase 4 考慮 perturbation
+- Mandelbrot / Burning Ship / Tricorn：`rebasing.wgsl` 共用迴圈；|z| < |w| 或 reference
+  用完時 rebase 返去 Z_0 = 0，唔會跌返落 f32 座標
+- Julia / Nova：每個像素由自己嘅 z_0 開始，c 固定，偏差公式本身冇抵消誤差
+- 深度上限由相機嘅 f64 中心決定（約 1e13）
+
+**唔好用 emulated double（兩個 f32 模擬 f64）**：Dekker / Knuth 嘅誤差補償靠運算次序，
+Metal 等 backend 嘅 fast-math 會將誤差項優化走，結果同普通 f32 一樣（曾經喺 M1 上量度到）。
+
+`export.rs` 嘅 `deep_zoom_matches_f64_reference` 測試會將 GPU 輸出同 CPU f64 參考逐像素比較。
 
 ---
 
