@@ -1,27 +1,6 @@
 // Buddhabrot accumulation compute shader
 // Each thread traces one random orbit; escaping orbits atomically increment the accumulation buffer.
 
-struct Uniforms {
-    center: vec2<f32>,       // offset 0, 8 bytes
-    zoom: f32,               // offset 8, 4 bytes
-    aspect_ratio: f32,       // offset 12, 4 bytes
-    max_iter: u32,           // offset 16, 4 bytes
-    fractal_type: u32,       // offset 20, 4 bytes
-    color_scheme: u32,       // offset 24, 4 bytes
-    c_real: f32,             // offset 28, 4 bytes
-    c_imag: f32,             // offset 32, 4 bytes
-    center_lo_x: f32,        // offset 36, 4 bytes
-    center_lo_y: f32,        // offset 40, 4 bytes
-    zoom_lo: f32,            // offset 44, 4 bytes
-    pixel_step_x: f32,       // offset 48, 4 bytes
-    pixel_step_y: f32,       // offset 52, 4 bytes
-    ref_escape_iter: u32,    // offset 56, 4 bytes (repurposed as frame seed)
-    rotation: f32,           // offset 60, 4 bytes
-    _pad2: vec3<u32>,        // offset 64, 12 bytes
-    _pad3: u32,              // offset 76, 4 bytes
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read_write> accum_buf: array<atomic<u32>>;
 
 // Hash function for pseudo-random number generation
@@ -38,9 +17,9 @@ fn rand_float(hash: u32) -> f32 {
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    // Screen dimensions passed directly via _pad2 to avoid float roundtrip precision issues
-    let width = uniforms._pad2.x;
-    let height = uniforms._pad2.y;
+    // Screen dimensions passed directly via `extra` to avoid float roundtrip precision issues
+    let width = uniforms.extra.x;
+    let height = uniforms.extra.y;
 
     if width == 0u || height == 0u {
         return;

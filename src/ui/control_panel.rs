@@ -1,6 +1,6 @@
 use crate::coloring::{ColorScheme, PresetPalettes};
 use crate::export::{ExportResolution, VideoSettings};
-use crate::fractals::FractalType;
+use crate::fractals::{FractalType, MAX_ITERATIONS, MIN_ITERATIONS};
 use glam::Vec2;
 
 /// Action requested by the control panel
@@ -102,29 +102,23 @@ impl ControlPanel {
                 if !linked_mode {
                     ui.heading("Fractal Type");
 
-                    ui.radio_value(&mut *fractal, FractalType::Mandelbrot, "Mandelbrot Set");
-                    ui.radio_value(&mut *fractal, FractalType::Julia { c: Vec2::new(-0.7, 0.27015) }, "Julia Set");
-                    ui.radio_value(&mut *fractal, FractalType::BurningShip, "Burning Ship");
-                    ui.radio_value(&mut *fractal, FractalType::Tricorn, "Tricorn");
-                    ui.radio_value(&mut *fractal, FractalType::Buddhabrot, "Buddhabrot");
-                    ui.radio_value(&mut *fractal, FractalType::Nova { c: Vec2::new(1.0, 0.0) }, "Nova Fractal");
-                    ui.radio_value(&mut *fractal, FractalType::GoldenSilver, "Golden-Silver Gasket");
-
-                    // Julia parameters
-                    if let FractalType::Julia { ref mut c } = fractal {
-                        ui.separator();
-                        ui.label("Julia Parameters:");
-                        ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
-                        ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
-                        ui.label("Tip: Right-click to set c");
+                    for preset in &FractalType::ALL {
+                        let selected = fractal.id() == preset.id();
+                        if ui.radio(selected, preset.name()).clicked() && !selected {
+                            *fractal = preset.clone();
+                        }
                     }
 
-                    // Nova parameters
-                    if let FractalType::Nova { ref mut c } = fractal {
+                    // Parameter c (Julia, Nova)
+                    let is_julia = matches!(fractal, FractalType::Julia { .. });
+                    if let Some(c) = fractal.c_mut() {
                         ui.separator();
-                        ui.label("Nova Parameters:");
+                        ui.label(if is_julia { "Julia Parameters:" } else { "Nova Parameters:" });
                         ui.add(egui::Slider::new(&mut c.x, -2.0..=2.0).text("c (real)"));
                         ui.add(egui::Slider::new(&mut c.y, -2.0..=2.0).text("c (imag)"));
+                        if is_julia {
+                            ui.label("Tip: Right-click to set c");
+                        }
                     }
                 }
 
@@ -133,7 +127,7 @@ impl ControlPanel {
                 // Iterations
                 ui.heading("Rendering");
                 ui.add(
-                    egui::Slider::new(max_iter, 64..=4096)
+                    egui::Slider::new(max_iter, MIN_ITERATIONS..=MAX_ITERATIONS)
                         .text("Max Iterations")
                         .logarithmic(true),
                 );
@@ -246,7 +240,7 @@ impl ControlPanel {
 
                 // Keyboard shortcuts
                 ui.heading("Keyboard Shortcuts");
-                ui.label("1-7: Switch fractal type");
+                ui.label(format!("1-{}: Switch fractal type", FractalType::ALL.len()));
                 ui.label("C: Cycle color scheme");
                 ui.label("R: Reset view");
                 ui.label("Q/E: Rotate left/right");
