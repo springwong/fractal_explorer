@@ -2,7 +2,7 @@
 //!
 //! WGSL has no `#include`, so every compute shader is put together here from shared
 //! modules plus one fractal-specific body. The uniform block, the palette lookup, the
-//! pixel -> plane mapping and the rebasing perturbation loop each exist in exactly one
+//! pixel -> plane mapping, the rebasing perturbation loop and Newton's method each exist in exactly one
 //! file under `src/shaders/`.
 
 const COMMON: &str = include_str!("../shaders/common.wgsl");
@@ -11,6 +11,8 @@ const BINDINGS_ORBIT: &str = include_str!("../shaders/bindings_orbit.wgsl");
 const PALETTE: &str = include_str!("../shaders/palette.wgsl");
 const VIEW: &str = include_str!("../shaders/view.wgsl");
 const REBASING: &str = include_str!("../shaders/rebasing.wgsl");
+const NEWTON_CORE: &str = include_str!("../shaders/newton_core.wgsl");
+const NEWTON_PERTURBATION: &str = include_str!("../shaders/newton_perturbation.wgsl");
 
 /// Which shared modules (and which bind group layout) a fractal shader body needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +25,12 @@ pub enum ShaderKind {
     /// Perturbation using the shared rebasing loop (`rebasing.wgsl`); the body only
     /// supplies `delta_step`. Same bindings as `Perturbation`.
     RebasingPerturbation,
+    /// Newton's method in f32 (`newton_core.wgsl`); the body only picks the colouring.
+    /// Same bindings as `Standard`.
+    Newton,
+    /// Newton's method by perturbation (`newton_perturbation.wgsl`); the body only
+    /// picks the colouring. Same bindings as `Perturbation`.
+    NewtonPerturbation,
 }
 
 /// A per-pixel fractal compute shader: a fractal-specific body plus the shared
@@ -51,9 +59,22 @@ impl Shader {
         Self { body, kind: ShaderKind::RebasingPerturbation }
     }
 
+    /// Shader colouring the outcome of the shared f32 Newton iteration
+    pub const fn newton(body: &'static str) -> Self {
+        Self { body, kind: ShaderKind::Newton }
+    }
+
+    /// Shader colouring the outcome of the shared Newton perturbation loop
+    pub const fn newton_perturbation(body: &'static str) -> Self {
+        Self { body, kind: ShaderKind::NewtonPerturbation }
+    }
+
     /// Whether the shader reads a reference orbit (and so needs the orbit bind group)
     pub fn uses_orbit(&self) -> bool {
-        matches!(self.kind, ShaderKind::Perturbation | ShaderKind::RebasingPerturbation)
+        matches!(
+            self.kind,
+            ShaderKind::Perturbation | ShaderKind::RebasingPerturbation | ShaderKind::NewtonPerturbation
+        )
     }
 
     /// The complete WGSL source
@@ -62,6 +83,10 @@ impl Shader {
             ShaderKind::Standard => &[COMMON, BINDINGS_STANDARD, PALETTE, VIEW],
             ShaderKind::Perturbation => &[COMMON, BINDINGS_ORBIT, PALETTE, VIEW],
             ShaderKind::RebasingPerturbation => &[COMMON, BINDINGS_ORBIT, PALETTE, VIEW, REBASING],
+            ShaderKind::Newton => &[COMMON, BINDINGS_STANDARD, PALETTE, VIEW, NEWTON_CORE],
+            ShaderKind::NewtonPerturbation => {
+                &[COMMON, BINDINGS_ORBIT, PALETTE, VIEW, NEWTON_CORE, NEWTON_PERTURBATION]
+            }
         };
         assemble(modules, self.body)
     }

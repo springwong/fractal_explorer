@@ -509,6 +509,8 @@ mod tests {
             // The gasket repeats at every scale around the origin
             DVec2::new(2.0e-6, 1.0e-6),
         ];
+        // The newer fractals get a point on their own edge
+        let deep_centers = deep_centers.into_iter().chain(FractalType::ALL[7..].iter().map(boundary_point));
 
         for (fractal, deep_center) in FractalType::ALL.iter().zip(deep_centers) {
             let views = [
@@ -545,19 +547,25 @@ mod tests {
 
     /// Smooth escape time as the shaders define it (bailout radius² 256), in f64.
     fn escape_time(z0: DVec2, n: u32, step: impl Fn(DVec2) -> DVec2) -> f64 {
+        escape_time_of_degree(2.0, z0, n, step)
+    }
+
+    /// Smooth escape time of a map whose steps raise |z| to the power `degree`
+    fn escape_time_of_degree(degree: f64, z0: DVec2, n: u32, step: impl Fn(DVec2) -> DVec2) -> f64 {
         let mut z = z0;
         for i in 0..n {
             let m = z.length_squared();
             if m > 256.0 {
-                return i as f64 + 1.0 - (m.log2() / 2.0).log2();
+                return i as f64 + 1.0 - (m.log2() / 2.0).log2() / degree.log2();
             }
             z = step(z);
         }
         0.0
     }
 
-    /// The Nova shader's value in f64.
-    fn nova_value(z0: DVec2, c: DVec2, n: u32) -> f64 {
+    /// Newton's method with offset `c` as the shaders run it, in f64. Returns the
+    /// smooth step count and the end point if it converged, else the step count.
+    fn newton_run(z0: DVec2, c: DVec2, n: u32) -> Result<(f64, DVec2), u32> {
         let mut z = z0;
         let mut i = 0;
         while i < n {
@@ -574,10 +582,30 @@ mod tests {
             z = next;
             i += 1;
             if d2 < 1.0e-6 {
-                return (i as f64 - ((d2 + 1.0e-20).log2() / 1.0e-6f64.log2()).log2()).max(0.0);
+                return Ok(((i as f64 - ((d2 + 1.0e-20).log2() / 1.0e-6f64.log2()).log2()).max(0.0), z));
             }
         }
-        if i == n { 0.0 } else { i as f64 }
+        Err(i)
+    }
+
+    /// The Nova shader's value in f64.
+    fn nova_value(z0: DVec2, c: DVec2, n: u32) -> f64 {
+        match newton_run(z0, c, n) {
+            Ok((steps, _)) => steps,
+            Err(i) => if i == n { 0.0 } else { i as f64 },
+        }
+    }
+
+    /// Which root of z³ = 1 Newton's method reaches from `z0` (0, 1, 2), if any
+    fn newton_root(z0: DVec2, n: u32) -> Option<(u32, f64)> {
+        let (steps, z) = newton_run(z0, DVec2::ZERO, n).ok()?;
+        let third = std::f64::consts::TAU / 3.0;
+        Some((((z.y.atan2(z.x) / third).round() as i32 + 3) as u32 % 3, steps))
+    }
+
+    /// The Newton shader's value in f64.
+    fn newton_value(z0: DVec2, n: u32) -> f64 {
+        newton_root(z0, n).map_or(0.0, |(root, steps)| 0.5 + root as f64 * (20.0 / 3.0) + (steps * 0.15).min(5.5))
     }
 
     /// The f64 twin of each per-pixel fractal: its value at plane point `p`
@@ -597,6 +625,20 @@ mod tests {
                 escape_time(p, n, |z| DVec2::new(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y))
             }
             FractalType::Nova { .. } => nova_value(p, c, n),
+            FractalType::Multibrot => escape_time_of_degree(3.0, DVec2::ZERO, n, |z| {
+                let (x2, y2) = (z.x * z.x, z.y * z.y);
+                DVec2::new(z.x * (x2 - 3.0 * y2) + p.x, z.y * (3.0 * x2 - y2) + p.y)
+            }),
+            FractalType::Celtic => {
+                escape_time(DVec2::ZERO, n, |z| DVec2::new((z.x * z.x - z.y * z.y).abs() + p.x, 2.0 * z.x * z.y + p.y))
+            }
+            FractalType::Buffalo => escape_time(DVec2::ZERO, n, |z| {
+                DVec2::new((z.x * z.x - z.y * z.y).abs() + p.x, -2.0 * (z.x * z.y).abs() + p.y)
+            }),
+            FractalType::Perpendicular => {
+                escape_time(DVec2::ZERO, n, |z| DVec2::new(z.x * z.x - z.y * z.y + p.x, -2.0 * z.x.abs() * z.y + p.y))
+            }
+            FractalType::Newton => newton_value(p, n),
             FractalType::Buddhabrot | FractalType::GoldenSilver => unreachable!(),
         }
     }
@@ -621,6 +663,18 @@ mod tests {
             }
         }
         a
+    }
+
+    /// A point on the fractal itself, near its default view: on the edge of the
+    /// interior, or for Newton between the basins of two roots.
+    fn boundary_point(fractal: &FractalType) -> DVec2 {
+        let center = fractal.default_center();
+        let f = fractal.clone();
+        let class = move |p: DVec2| match f {
+            FractalType::Newton => newton_root(p, 400).map(|(root, _)| root),
+            _ => (cpu_value(&f, p, 400) == 0.0).then_some(0),
+        };
+        find_edge(class, center - 1.5, center + 1.5)
     }
 
     /// How a GPU render compares with the CPU reference
@@ -742,7 +796,10 @@ mod tests {
             (FractalType::BurningShip, edge_of(&FractalType::BurningShip, box_around(DVec2::new(-1.755, -0.03), 0.04))),
             (FractalType::Tricorn, edge_of(&FractalType::Tricorn, box_around(DVec2::ZERO, 2.0))),
             (nova, nova_point),
-        ];
+        ]
+        .into_iter()
+        .chain(FractalType::ALL[7..].iter().map(|f| (f.clone(), boundary_point(f))))
+        .collect::<Vec<_>>();
 
         for (fractal, center) in &cases {
             for zoom in [1.0e2, 1.0e5, 1.0e8, 1.0e11] {
@@ -753,9 +810,13 @@ mod tests {
                 );
                 println!("{label}");
                 assert!(a.wrong_side < 5.0, "{label}");
-                if matches!(fractal, FractalType::BurningShip) {
-                    // The Burning Ship's fold makes slow orbits depend on the last bit of
-                    // every operation: f32 and f64 disagree on them at any zoom, even on
+                let folds = matches!(
+                    fractal,
+                    FractalType::BurningShip | FractalType::Celtic | FractalType::Buffalo | FractalType::Perpendicular
+                );
+                if folds {
+                    // A fold (abs) makes slow orbits depend on the last bit of every
+                    // operation: f32 and f64 disagree on them at any zoom, even on
                     // identical inputs. So check the picture keeps its detail instead.
                     assert!(a.levels > 100, "{label}");
                 } else {
