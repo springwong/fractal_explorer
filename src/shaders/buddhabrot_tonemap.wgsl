@@ -5,6 +5,9 @@
 @group(0) @binding(2) var<storage, read> accum_buf: array<u32>;
 @group(0) @binding(3) var<storage, read> palette_lut: array<u32>;
 
+// Pixel count at which an average pixel collects about one hit per batch
+const EVEN_SPREAD_PIXELS: f32 = 12000.0;
+
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(output_texture);
@@ -21,11 +24,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    // Normalize by sample count to get per-frame hit rate, then log tonemap
-    // This stays stable as frames accumulate, preserving contrast
+    // Hits per batch, relative to what a pixel would collect if the batch were spread
+    // evenly over the image, then log tonemap. Stable as batches accumulate, and the
+    // same brightness at every output size: a batch is a fixed number of orbits, so
+    // the hits each pixel gets from it shrink as the pixel count grows.
     let sample_count = f32(max(uniforms.extra.z, 1u));
-    let hits_per_frame = f32(count) / sample_count;
-    let t = log2(hits_per_frame + 1.0) * 0.3;
+    let density = f32(count) / sample_count * f32(dims.x * dims.y) / EVEN_SPREAD_PIXELS;
+    let t = log2(density + 1.0) * 0.3;
 
     // Colorize based on scheme
     let color = sample_palette(t);
