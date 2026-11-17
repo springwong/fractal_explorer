@@ -12,6 +12,11 @@ const BUDDHABROT_SAMPLES_PER_FRAME: u32 = 65536;
 /// Workgroup size of the accumulation shader (one orbit per invocation)
 const BUDDHABROT_WORKGROUP_SIZE: u32 = 256;
 
+/// Size of the fractal picker's preview images, in pixels (16:10)
+pub const THUMBNAIL_SIZE: (u32, u32) = (320, 200);
+/// Iteration count the previews are rendered with
+const THUMBNAIL_ITERATIONS: u32 = 256;
+
 /// All compute resources of the live view: the main fractal target, the Julia target
 /// of the linked split view, and the Buddhabrot accumulation passes.
 pub struct ComputePipeline {
@@ -23,6 +28,8 @@ pub struct ComputePipeline {
     /// Julia side of the linked Mandelbrot / Julia split view
     pub julia: FractalTarget,
     buddhabrot: BuddhabrotPasses,
+    /// Preview images for the fractal picker
+    thumbnails: Thumbnails,
     /// Total accumulated sample batches for Buddhabrot
     pub accum_sample_count: u32,
     /// Whether the main view was last rendered with its deep-zoom shader
@@ -36,10 +43,11 @@ impl ComputePipeline {
         let palette_buffer = create_palette_buffer(device);
         let (main, julia) = Self::create_targets(device, &pipelines, &palette_buffer, width, height);
         let buddhabrot = BuddhabrotPasses::new(device, &main, &palette_buffer);
+        let thumbnails = Thumbnails::new(device, &pipelines, &palette_buffer);
 
         log::info!("Compute pipeline created: {}x{}", width, height);
 
-        Self { pipelines, palette_buffer, main, julia, buddhabrot, accum_sample_count: 0, using_f64: false }
+        Self { pipelines, palette_buffer, main, julia, buddhabrot, thumbnails, accum_sample_count: 0, using_f64: false }
     }
 
     fn create_targets(
@@ -114,15 +122,47 @@ impl ComputePipeline {
         view: &View,
         seed: u32,
     ) {
-        let (width, height) = (self.main.width(), self.main.height());
-        let mut uniforms = FractalUniforms::for_view(&FractalType::Buddhabrot, view, width, height);
-        uniforms.ref_escape_iter = seed;
-        uniforms.extra = [width, height, self.accum_sample_count];
-        queue.write_buffer(&self.main.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-
-        self.buddhabrot.dispatch(device, encoder, width, height);
+        self.buddhabrot.add_batch(device, queue, encoder, &self.main, view, seed, self.accum_sample_count);
         self.accum_sample_count += 1;
         self.using_f64 = false;
+    }
+
+    /// The fractal picker's preview textures, one per entry of `FractalType::ALL`
+    pub fn thumbnail_views(&self) -> impl Iterator<Item = &wgpu::TextureView> {
+        self.thumbnails.targets.iter().map(|target| &target.view)
+    }
+
+    /// Bring the fractal picker's previews up to date; call once per frame while the
+    /// picker is on screen. Each preview shows its fractal's default view in the
+    /// current palette.
+    ///
+    /// `redraw` re-renders the per-pixel previews (picker just opened, palette
+    /// changed). The Buddhabrot preview gains one batch of samples on every call.
+    pub fn render_thumbnails(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        redraw: bool,
+    ) {
+        let thumbnails = &mut self.thumbnails;
+        for (fractal, target) in FractalType::ALL.iter().zip(&thumbnails.targets) {
+            let view = View {
+                center: fractal.default_center(),
+                zoom: fractal.default_zoom(),
+                rotation: 0.0,
+                max_iter: THUMBNAIL_ITERATIONS,
+            };
+            if fractal.is_buddhabrot() {
+                let batch = thumbnails.buddhabrot_batches;
+                thumbnails.buddhabrot.add_batch(device, queue, encoder, target, &view, batch, batch + 1);
+                thumbnails.buddhabrot_batches += 1;
+            } else if redraw {
+                if let Err(e) = target.render(device, queue, encoder, &mut self.pipelines, fractal, &view) {
+                    log::error!("Preview of {} failed: {e}", fractal.name());
+                }
+            }
+        }
     }
 
     /// Recreate textures on resize
@@ -132,6 +172,34 @@ impl ComputePipeline {
         self.accum_sample_count = 0;
 
         log::info!("Compute pipeline resized to {}x{}", width, height);
+    }
+}
+
+/// Small renders of every fractal's default view, shown in the fractal picker
+struct Thumbnails {
+    /// One target per entry of `FractalType::ALL`
+    targets: Vec<FractalTarget>,
+    /// Accumulation passes for the Buddhabrot preview
+    buddhabrot: BuddhabrotPasses,
+    /// Sample batches accumulated into the Buddhabrot preview so far
+    buddhabrot_batches: u32,
+}
+
+impl Thumbnails {
+    fn new(device: &wgpu::Device, pipelines: &FractalPipelines, palette_buffer: &wgpu::Buffer) -> Self {
+        let (width, height) = THUMBNAIL_SIZE;
+        let targets: Vec<FractalTarget> = FractalType::ALL
+            .iter()
+            .map(|fractal| {
+                let label = format!("{} Preview", fractal.name());
+                let usage = wgpu::TextureUsages::TEXTURE_BINDING;
+                FractalTarget::new(device, pipelines, palette_buffer, &label, width, height, usage)
+            })
+            .collect();
+        // Fractals rendered per pixel never touch these passes; any target will do then
+        let accumulated = FractalType::ALL.iter().position(FractalType::is_buddhabrot).unwrap_or(0);
+        let buddhabrot = BuddhabrotPasses::new(device, &targets[accumulated], palette_buffer);
+        Self { targets, buddhabrot, buddhabrot_batches: 0 }
     }
 }
 
@@ -216,6 +284,29 @@ impl BuddhabrotPasses {
     fn rebind(&mut self, device: &wgpu::Device, target: &FractalTarget, palette_buffer: &wgpu::Buffer) {
         (self.accum_buffer, self.accum_bind_group, self.tonemap_bind_group) =
             Self::bind(device, &self.accum_layout, &self.tonemap_layout, target, palette_buffer);
+    }
+
+    /// Add one batch of random orbits for `view` to the counters and tonemap them into
+    /// `target`, which must be the target these passes are bound to. `seed` must differ
+    /// between batches; `normalisation` is what the tonemap divides the hit counts by
+    /// (the number of batches accumulated, for a full-size view).
+    #[allow(clippy::too_many_arguments)]
+    fn add_batch(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &FractalTarget,
+        view: &View,
+        seed: u32,
+        normalisation: u32,
+    ) {
+        let (width, height) = (target.width(), target.height());
+        let mut uniforms = FractalUniforms::for_view(&FractalType::Buddhabrot, view, width, height);
+        uniforms.ref_escape_iter = seed;
+        uniforms.extra = [width, height, normalisation];
+        queue.write_buffer(&target.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        self.dispatch(device, encoder, width, height);
     }
 
     /// Record the accumulation pass and the tonemap pass
@@ -307,6 +398,14 @@ mod tests {
                 queue.submit(std::iter::once(encoder.finish()));
             }
         }
+        // Fractal picker previews: first draw, then a frame that only adds samples
+        assert_eq!(compute.thumbnail_views().count(), FractalType::ALL.len());
+        for redraw in [true, false] {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            compute.render_thumbnails(&device, &queue, &mut encoder, redraw);
+            queue.submit(std::iter::once(encoder.finish()));
+        }
+
         device.poll(wgpu::Maintain::Wait);
         let error = pollster::block_on(device.pop_error_scope());
         assert!(error.is_none(), "{error:?}");

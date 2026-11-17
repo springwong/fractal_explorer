@@ -1,6 +1,8 @@
 // Mandelbrot set, deep zoom: perturbation with rebasing (see rebasing.wgsl).
 // z -> z² + c
 
+const DEGREE: f32 = 2.0;
+
 /// (Z + w)² + (C + dc) - (Z² + C) = 2Zw + w² + dc
 fn delta_step(z_ref: vec2<f32>, w: vec2<f32>, dc: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(

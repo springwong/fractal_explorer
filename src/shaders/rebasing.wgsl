@@ -1,5 +1,5 @@
 // Perturbation with rebasing, for maps iterated from z_0 = 0 with c = the pixel
-// (Mandelbrot, Burning Ship, Tricorn).
+// (Mandelbrot, Burning Ship, Tricorn, Multibrot, Celtic, Buffalo, Perpendicular).
 //
 // The CPU computes one reference orbit Z_m in f64 for c = view centre. A pixel only
 // tracks its offset w from that orbit, which stays accurate in f32 at any zoom.
@@ -7,7 +7,10 @@
 //
 //   fn delta_step(z_ref: vec2<f32>, w: vec2<f32>, dc: vec2<f32>) -> vec2<f32>
 //
-// returning f(Z + w, C + dc) - f(Z, C) in a form free of cancellation.
+// returning f(Z + w, C + dc) - f(Z, C) in a form free of cancellation, and the power
+// each step raises |z| to (the base of the smooth colouring):
+//
+//   const DEGREE: f32
 //
 // Rebasing: whenever the pixel's orbit comes closer to the origin than its offset is
 // large (|z| < |w|), or the reference orbit has run out, the pixel restarts on the
@@ -16,6 +19,17 @@
 
 // Bailout radius squared (large, for smooth colouring)
 const BAILOUT2: f32 = 256.0;
+
+/// |c + d| - |c| without the cancellation the direct form has when |d| << |c|.
+/// For the maps that fold with abs().
+fn diff_abs(c: f32, d: f32) -> f32 {
+    if c >= 0.0 {
+        if c + d >= 0.0 { return d; }
+        return -(2.0 * c + d);
+    }
+    if c + d > 0.0 { return 2.0 * c + d; }
+    return -d;
+}
 
 /// Smooth escape time of the pixel at offset `dc` from the view centre (0 = inside).
 fn perturbed_escape_time(dc: vec2<f32>) -> f32 {
@@ -30,7 +44,7 @@ fn perturbed_escape_time(dc: vec2<f32>) -> f32 {
         let mag2 = dot(z, z);
 
         if mag2 > BAILOUT2 {
-            let nu = log2(log2(mag2) / 2.0);
+            let nu = log2(log2(mag2) / 2.0) / log2(DEGREE);
             return f32(iter) + 1.0 - nu;
         }
 

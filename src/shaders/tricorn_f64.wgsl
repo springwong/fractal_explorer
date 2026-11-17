@@ -1,6 +1,8 @@
 // Tricorn (Mandelbar), deep zoom: perturbation with rebasing (see rebasing.wgsl).
 // z -> conj(z)² + c, i.e. x' = x² - y² + cx, y' = -2xy + cy
 
+const DEGREE: f32 = 2.0;
+
 fn delta_step(z_ref: vec2<f32>, w: vec2<f32>, dc: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(
         2.0 * (z_ref.x * w.x - z_ref.y * w.y) + (w.x * w.x - w.y * w.y) + dc.x,

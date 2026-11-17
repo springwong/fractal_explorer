@@ -12,6 +12,7 @@ pub enum PanelAction {
     OpenPaletteEditor,
     SelectPreset(usize),
     ToggleLinkedMode,
+    OpenFractalPicker,
     StartRecording(VideoSettings),
 }
 
@@ -107,6 +108,10 @@ impl ControlPanel {
                         if ui.radio(selected, preset.name()).clicked() && !selected {
                             *fractal = preset.clone();
                         }
+                    }
+
+                    if ui.button("Show pictures... (Space)").clicked() {
+                        action = PanelAction::OpenFractalPicker;
                     }
 
                     // Parameter c (Julia, Nova)
@@ -240,7 +245,8 @@ impl ControlPanel {
 
                 // Keyboard shortcuts
                 ui.heading("Keyboard Shortcuts");
-                ui.label(format!("1-{}: Switch fractal type", FractalType::ALL.len()));
+                ui.label("Space: Pick a fractal by picture");
+                ui.label(format!("1-{}: Switch fractal type", FractalType::ALL.len().min(9)));
                 ui.label("C: Cycle color scheme");
                 ui.label("R: Reset view");
                 ui.label("Q/E: Rotate left/right");

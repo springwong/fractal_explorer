@@ -63,11 +63,13 @@ fractal-explorer/
 │   │   └── uniforms.rs        # FractalUniforms、View、reference orbit
 │   ├── fractals/
 │   │   ├── mod.rs             # FractalType enum + FractalInfo 表（唯一的 fractal 定義處）
-│   │   └── golden_silver.rs   # 金銀墊片的 CPU 端 uniform 計算
+│   │   ├── golden_silver.rs   # 金銀墊片的 CPU 端 uniform 計算
+│   │   └── lattice.rs         # Sierpinski 三角形 / 地毯：視圖中心轉做整數定點座標
 │   ├── ui/
 │   │   ├── mod.rs
 │   │   ├── control_panel.rs   # egui 側邊欄
 │   │   ├── viewport.rs        # 滑鼠互動
+│   │   ├── fractal_picker.rs   # Space 開嘅 fractal 選擇 overlay（縮圖 + 字母）
 │   │   ├── palette_editor.rs   # 自訂 Palette 編輯器
 │   │   └── color_editor.rs
 │   ├── coloring/
@@ -80,7 +82,10 @@ fractal-explorer/
 │       ├── bindings_orbit.wgsl    # output texture + reference orbit + palette
 │       ├── palette.wgsl           # sample_palette()
 │       ├── view.wgsl              # pixel → 複數平面座標
-│       ├── rebasing.wgsl          # 帶 rebasing 的 perturbation 迴圈
+│       ├── rebasing.wgsl          # 帶 rebasing 的 perturbation 迴圈 + diff_abs
+│       ├── lattice.wgsl           # 64-bit 整數像素座標（Sierpinski 三角形 / 地毯）
+│       ├── newton_core.wgsl       # z³-1 的 Newton 迭代（f32）+ Nova / Newton 著色
+│       ├── newton_perturbation.wgsl # Newton / Nova 的 perturbation 迴圈
 │       ├── fullscreen.wgsl        # Fullscreen quad
 │       ├── <fractal>.wgsl         # 各 fractal 的迭代函數 + main（f32）
 │       └── <fractal>_f64.wgsl     # 深度縮放版本（perturbation）
@@ -120,8 +125,11 @@ WGSL 冇 `#include`，所以由 `Shader::source()` 將共用模組同 fractal �
 | ShaderKind | 模組 |
 |------------|------|
 | `Standard` | common + bindings_standard + palette + view |
-| `Perturbation` | common + bindings_orbit + palette + view（本體自己寫迴圈：Julia、Nova） |
-| `RebasingPerturbation` | 同上 + rebasing（本體只提供 `delta_step`：Mandelbrot、Burning Ship、Tricorn） |
+| `Perturbation` | common + bindings_orbit + palette + view（本體自己寫迴圈：Julia） |
+| `RebasingPerturbation` | Perturbation + rebasing（本體只提供 `delta_step` 同 `DEGREE`：Mandelbrot、Burning Ship、Tricorn、Multibrot、Celtic、Buffalo、Perpendicular） |
+| `Lattice` | Standard + lattice（整數定點座標，本體讀座標嘅進位數字：Sierpinski Triangle、Sierpinski Carpet） |
+| `Newton` | Standard + newton_core（本體只揀著色：Newton） |
+| `NewtonPerturbation` | Perturbation + newton_core + newton_perturbation（本體只揀著色：Nova、Newton） |
 
 各 fractal 的 `.wgsl` 只寫迭代函數同 `main`，唔好再抄 `Uniforms`、`sample_palette` 或 perturbation 迴圈。
 
@@ -253,6 +261,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 | `5` | Buddhabrot |
 | `6` | Nova Fractal |
 | `7` | Golden-Silver Gasket（黃金進位版 Sierpinski，維數 ln(1+√2)/ln φ ≈ 1.8316） |
+| `8` | Multibrot（z³ + c） |
+| `9` | Celtic |
+| — | Buffalo、Perpendicular、Newton、Sierpinski Triangle、Sierpinski Carpet、Koch Snowflake、Apollonian Gasket（冇數字鍵，用 `Space` 揀） |
+| `Space` | 開 / 關 fractal 選擇 overlay；開咗之後撳卡片上嘅字母（`A` = 第 1 個）或者用滑鼠揀，`Esc` 亦可關閉 |
 | `+` / `-` | 增減最大迭代次數 (+/- 64) |
 | `R` | 重置視圖 |
 | `P` | 截圖 PNG (1080p) |
@@ -348,10 +360,14 @@ f32 的極限係相鄰像素之間嘅間距：|c| 近 2 時 f32 數值相隔 2.4
 過咗門檻全部用 **perturbation theory**：CPU 用 f64 計一條 reference orbit，GPU 每個像素
 只用 f32 追蹤同 reference 嘅偏差。
 
-- Mandelbrot / Burning Ship / Tricorn：`rebasing.wgsl` 共用迴圈；|z| < |w| 或 reference
+- Mandelbrot / Burning Ship / Tricorn / Multibrot / Celtic / Buffalo / Perpendicular：`rebasing.wgsl` 共用迴圈；|z| < |w| 或 reference
   用完時 rebase 返去 Z_0 = 0，唔會跌返落 f32 座標
-- Julia / Nova：每個像素由自己嘅 z_0 開始，c 固定，偏差公式本身冇抵消誤差
+- Julia / Nova / Newton：每個像素由自己嘅 z_0 開始，c 固定，偏差公式本身冇抵消誤差
 - 深度上限由相機嘅 f64 中心決定（約 1e13）
+- Sierpinski Triangle / Carpet：唔係逃逸時間，GPU 用 64-bit 整數（兩個 u32）讀座標嘅進位數字，
+  任何 zoom 都精確（`lattice.wgsl` + `fractals/lattice.rs`）。整數運算唔受 fast-math 影響，
+  但 Metal 曾經將 16-bit 分段長除法計錯，`digit_fractals_match_f64_reference` 測試負責睇住
+- Koch Snowflake / Apollonian Gasket：純 f32 摺疊／反演，zoom 上限 1e4（`F32_ZOOM`）
 
 **唔好用 emulated double（兩個 f32 模擬 f64）**：Dekker / Knuth 嘅誤差補償靠運算次序，
 Metal 等 backend 嘅 fast-math 會將誤差項優化走，結果同普通 f32 一樣（曾經喺 M1 上量度到）。
@@ -380,10 +396,10 @@ Metal 等 backend 嘅 fast-math 會將誤差項優化走，結果同普通 f32 �
 **新增 fractal 的 checklist：**
 1. `src/shaders/` 加 `.wgsl` 本體（只寫迭代函數 + `main`；需要深度縮放再加 `_f64.wgsl`）
 2. `src/fractals/mod.rs`：`FractalType` 加 variant、加一個 `static FractalInfo`、
-   `info()` 加一個 match arm、`FractalType::ALL` 加一項（位置 = `id` = 鍵盤數字 - 1）
+   `info()` 加一個 match arm、`FractalType::ALL` 加一項（位置 = `id`；頭 9 個有數字鍵，全部都有 picker 字母）
 3. `cargo test`（shader 驗證、id 順序、預設視圖、離屏渲染測試會自動涵蓋新 fractal）
 
-面板選項、鍵盤快捷鍵、pipeline、PNG / 影片導出都唔使改。
+面板選項、鍵盤快捷鍵、選擇 overlay（縮圖同字母按 `FractalType::ALL` 自動生成）、pipeline、PNG / 影片導出都唔使改。
 
 **改 uniform 佈局：** 只改 `FractalUniforms`（`src/renderer/uniforms.rs`）同
 `src/shaders/common.wgsl` 兩處；`layout_matches_wgsl` 測試會對比兩邊的 offset。

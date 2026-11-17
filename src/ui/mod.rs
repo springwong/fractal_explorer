@@ -1,8 +1,10 @@
 /// UI module for egui integration
 mod control_panel;
+mod fractal_picker;
 mod palette_editor;
 
 pub use control_panel::{ControlPanel, PanelAction, RecordingState};
+pub use fractal_picker::{fractal_for_letter, FractalPicker};
 pub use palette_editor::PaletteEditor;
 
 use egui_winit::State as EguiState;

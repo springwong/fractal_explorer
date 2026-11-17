@@ -509,6 +509,17 @@ mod tests {
             // The gasket repeats at every scale around the origin
             DVec2::new(2.0e-6, 1.0e-6),
         ];
+        // The newer fractals get a point on their own edge
+        let deep_centers = deep_centers.into_iter().chain(FractalType::ALL[7..12].iter().map(boundary_point)).chain([
+            // A corner of the triangle and of the carpet: the same picture at every zoom
+            DVec2::ZERO,
+            DVec2::ZERO,
+            // A corner of the snowflake's triangle, which is on its edge
+            DVec2::new(-0.5, -(3f64.sqrt()) / 6.0),
+            // Where the top inner circle touches the unit circle
+            DVec2::new(0.0, 1.0),
+        ]);
+        assert_eq!(deep_centers.clone().count(), FractalType::ALL.len());
 
         for (fractal, deep_center) in FractalType::ALL.iter().zip(deep_centers) {
             let views = [
@@ -545,19 +556,25 @@ mod tests {
 
     /// Smooth escape time as the shaders define it (bailout radius² 256), in f64.
     fn escape_time(z0: DVec2, n: u32, step: impl Fn(DVec2) -> DVec2) -> f64 {
+        escape_time_of_degree(2.0, z0, n, step)
+    }
+
+    /// Smooth escape time of a map whose steps raise |z| to the power `degree`
+    fn escape_time_of_degree(degree: f64, z0: DVec2, n: u32, step: impl Fn(DVec2) -> DVec2) -> f64 {
         let mut z = z0;
         for i in 0..n {
             let m = z.length_squared();
             if m > 256.0 {
-                return i as f64 + 1.0 - (m.log2() / 2.0).log2();
+                return i as f64 + 1.0 - (m.log2() / 2.0).log2() / degree.log2();
             }
             z = step(z);
         }
         0.0
     }
 
-    /// The Nova shader's value in f64.
-    fn nova_value(z0: DVec2, c: DVec2, n: u32) -> f64 {
+    /// Newton's method with offset `c` as the shaders run it, in f64. Returns the
+    /// smooth step count and the end point if it converged, else the step count.
+    fn newton_run(z0: DVec2, c: DVec2, n: u32) -> Result<(f64, DVec2), u32> {
         let mut z = z0;
         let mut i = 0;
         while i < n {
@@ -574,10 +591,30 @@ mod tests {
             z = next;
             i += 1;
             if d2 < 1.0e-6 {
-                return (i as f64 - ((d2 + 1.0e-20).log2() / 1.0e-6f64.log2()).log2()).max(0.0);
+                return Ok(((i as f64 - ((d2 + 1.0e-20).log2() / 1.0e-6f64.log2()).log2()).max(0.0), z));
             }
         }
-        if i == n { 0.0 } else { i as f64 }
+        Err(i)
+    }
+
+    /// The Nova shader's value in f64.
+    fn nova_value(z0: DVec2, c: DVec2, n: u32) -> f64 {
+        match newton_run(z0, c, n) {
+            Ok((steps, _)) => steps,
+            Err(i) => if i == n { 0.0 } else { i as f64 },
+        }
+    }
+
+    /// Which root of z³ = 1 Newton's method reaches from `z0` (0, 1, 2), if any
+    fn newton_root(z0: DVec2, n: u32) -> Option<(u32, f64)> {
+        let (steps, z) = newton_run(z0, DVec2::ZERO, n).ok()?;
+        let third = std::f64::consts::TAU / 3.0;
+        Some((((z.y.atan2(z.x) / third).round() as i32 + 3) as u32 % 3, steps))
+    }
+
+    /// The Newton shader's value in f64.
+    fn newton_value(z0: DVec2, n: u32) -> f64 {
+        newton_root(z0, n).map_or(0.0, |(root, steps)| 0.5 + root as f64 * (20.0 / 3.0) + (steps * 0.15).min(5.5))
     }
 
     /// The f64 twin of each per-pixel fractal: its value at plane point `p`
@@ -597,7 +634,21 @@ mod tests {
                 escape_time(p, n, |z| DVec2::new(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y))
             }
             FractalType::Nova { .. } => nova_value(p, c, n),
-            FractalType::Buddhabrot | FractalType::GoldenSilver => unreachable!(),
+            FractalType::Multibrot => escape_time_of_degree(3.0, DVec2::ZERO, n, |z| {
+                let (x2, y2) = (z.x * z.x, z.y * z.y);
+                DVec2::new(z.x * (x2 - 3.0 * y2) + p.x, z.y * (3.0 * x2 - y2) + p.y)
+            }),
+            FractalType::Celtic => {
+                escape_time(DVec2::ZERO, n, |z| DVec2::new((z.x * z.x - z.y * z.y).abs() + p.x, 2.0 * z.x * z.y + p.y))
+            }
+            FractalType::Buffalo => escape_time(DVec2::ZERO, n, |z| {
+                DVec2::new((z.x * z.x - z.y * z.y).abs() + p.x, -2.0 * (z.x * z.y).abs() + p.y)
+            }),
+            FractalType::Perpendicular => {
+                escape_time(DVec2::ZERO, n, |z| DVec2::new(z.x * z.x - z.y * z.y + p.x, -2.0 * z.x.abs() * z.y + p.y))
+            }
+            FractalType::Newton => newton_value(p, n),
+            _ => unreachable!("{} has no f64 twin here", fractal.name()),
         }
     }
 
@@ -621,6 +672,18 @@ mod tests {
             }
         }
         a
+    }
+
+    /// A point on the fractal itself, near its default view: on the edge of the
+    /// interior, or for Newton between the basins of two roots.
+    fn boundary_point(fractal: &FractalType) -> DVec2 {
+        let center = fractal.default_center();
+        let f = fractal.clone();
+        let class = move |p: DVec2| match f {
+            FractalType::Newton => newton_root(p, 400).map(|(root, _)| root),
+            _ => (cpu_value(&f, p, 400) == 0.0).then_some(0),
+        };
+        find_edge(class, center - 1.5, center + 1.5)
     }
 
     /// How a GPU render compares with the CPU reference
@@ -742,7 +805,10 @@ mod tests {
             (FractalType::BurningShip, edge_of(&FractalType::BurningShip, box_around(DVec2::new(-1.755, -0.03), 0.04))),
             (FractalType::Tricorn, edge_of(&FractalType::Tricorn, box_around(DVec2::ZERO, 2.0))),
             (nova, nova_point),
-        ];
+        ]
+        .into_iter()
+        .chain(FractalType::ALL[7..12].iter().map(|f| (f.clone(), boundary_point(f))))
+        .collect::<Vec<_>>();
 
         for (fractal, center) in &cases {
             for zoom in [1.0e2, 1.0e5, 1.0e8, 1.0e11] {
@@ -753,14 +819,145 @@ mod tests {
                 );
                 println!("{label}");
                 assert!(a.wrong_side < 5.0, "{label}");
-                if matches!(fractal, FractalType::BurningShip) {
-                    // The Burning Ship's fold makes slow orbits depend on the last bit of
-                    // every operation: f32 and f64 disagree on them at any zoom, even on
+                let folds = matches!(
+                    fractal,
+                    FractalType::BurningShip | FractalType::Celtic | FractalType::Buffalo | FractalType::Perpendicular
+                );
+                if folds {
+                    // A fold (abs) makes slow orbits depend on the last bit of every
+                    // operation: f32 and f64 disagree on them at any zoom, even on
                     // identical inputs. So check the picture keeps its detail instead.
                     assert!(a.levels > 100, "{label}");
                 } else {
                     assert!(a.wrong_value < 5.0, "{label}");
                 }
+            }
+        }
+    }
+
+    // ---- Digit fractals against a CPU f64 reference -----------------------------------
+
+    /// What a point of a digit fractal is
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Digits {
+        Outside,
+        /// In a hole of this depth (0 = the biggest)
+        Hole(u32),
+        /// On the fractal itself, as far as f64 can tell
+        Set,
+    }
+
+    /// The Sierpinski triangle shader's classification in f64
+    fn triangle_point(p: DVec2) -> Digits {
+        let (mut u, mut v) = (p.x - p.y / 3f64.sqrt(), 2.0 * p.y / 3f64.sqrt());
+        if u < 0.0 || v < 0.0 || u + v >= 1.0 {
+            return Digits::Outside;
+        }
+        for depth in 0..45 {
+            (u, v) = (2.0 * u, 2.0 * v);
+            if u >= 1.0 {
+                u -= 1.0;
+            } else if v >= 1.0 {
+                v -= 1.0;
+            } else if u + v >= 1.0 {
+                return Digits::Hole(depth);
+            }
+        }
+        Digits::Set
+    }
+
+    /// The Sierpinski carpet shader's classification in f64
+    fn carpet_point(p: DVec2) -> Digits {
+        let (mut x, mut y) = (p.x, p.y);
+        if !(0.0..1.0).contains(&x) || !(0.0..1.0).contains(&y) {
+            return Digits::Outside;
+        }
+        for depth in 0..28 {
+            (x, y) = (3.0 * x, 3.0 * y);
+            let (digit_x, digit_y) = (x.floor(), y.floor());
+            if digit_x == 1.0 && digit_y == 1.0 {
+                return Digits::Hole(depth);
+            }
+            (x, y) = (x - digit_x, y - digit_y);
+        }
+        Digits::Set
+    }
+
+    /// The Sierpinski triangle and carpet work in integers on the GPU. They must show
+    /// what an f64 CPU render shows at every zoom, including where the coordinates no
+    /// longer fit one 32-bit word.
+    #[test]
+    fn digit_fractals_match_f64_reference() {
+        let Some((device, queue)) = headless_device() else {
+            eprintln!("no GPU adapter available; skipping");
+            return;
+        };
+        let (w, h) = (160u32, 120u32);
+        // Palette index in red; green tells a hole (255) from everything else (0)
+        let mut lut = [0u8; 1024];
+        for i in 0..256 {
+            lut[i * 4..i * 4 + 4].copy_from_slice(&[i as u8, 255, 0, 255]);
+        }
+        type Classify = fn(DVec2) -> Digits;
+        // Each centre is a point of the fractal, so there are holes at every zoom
+        let cases: [(FractalType, Classify, f64, DVec2); 3] = [
+            // u = 1/3, v = 2/15: their binary digits never coincide
+            (FractalType::SierpinskiTriangle, triangle_point, 2.0, DVec2::new(0.4, 3f64.sqrt() / 15.0)),
+            // x = 0.0202..., y = 0.1111... in base 3
+            (FractalType::SierpinskiCarpet, carpet_point, 3.0, DVec2::new(0.25, 0.5)),
+            // A corner of the carpet: outside on two sides
+            (FractalType::SierpinskiCarpet, carpet_point, 3.0, DVec2::ZERO),
+        ];
+
+        for (fractal, classify, base, center) in &cases {
+            for zoom in [1.0, 1.0e3, 1.0e7, 1.0e11] {
+                let view = View { center: *center, zoom, rotation: 0.0, max_iter: 256 };
+                let mut offscreen = Offscreen::new(&device, &queue, w, h, &lut);
+                offscreen.render(&device, &queue, fractal, &view).unwrap();
+                let gpu = offscreen.read_pixels(&device).unwrap();
+
+                let reference: Vec<Digits> = (0..w * h)
+                    .map(|i| {
+                        let (x, y) = ((i % w) as f64, (i / w) as f64);
+                        let offset = DVec2::new(x - w as f64 / 2.0, -(y - h as f64 / 2.0)) / (h as f64 * zoom);
+                        classify(*center + offset)
+                    })
+                    .collect();
+                // Side of a hole in pixels
+                let hole_pixels = |depth: u32| base.powi(-(depth as i32 + 1)) * h as f64 * zoom;
+
+                let mut wrong = 0;
+                let mut colours = std::collections::HashSet::new();
+                for y in 0..h as i32 {
+                    for x in 0..w as i32 {
+                        let pixel = &gpu[((y as u32 * w + x as u32) * 4) as usize..][..4];
+                        colours.insert((pixel[0], pixel[1]));
+                        let is_hole = pixel[1] == 255;
+                        let ok = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (x + dx, y + dy))).any(|(nx, ny)| {
+                            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                                return false;
+                            }
+                            match reference[(ny as u32 * w + nx as u32) as usize] {
+                                Digits::Outside | Digits::Set => !is_hole,
+                                Digits::Hole(depth) => {
+                                    let want = (((1.0 + 2.9 * depth as f64) * 0.05).fract() * 255.0) as i32;
+                                    // Holes around a pixel across may or may not be drawn
+                                    (is_hole && (want - pixel[0] as i32).abs() <= 2)
+                                        || (!is_hole && hole_pixels(depth) < 4.0)
+                                }
+                            }
+                        });
+                        wrong += !ok as u32;
+                    }
+                }
+                let percent = wrong as f64 * 100.0 / (w * h) as f64;
+                let label = format!(
+                    "{} at ({}, {}) zoom {zoom:.0e}: {percent:.2}% wrong, {} colours",
+                    fractal.name(), center.x, center.y, colours.len()
+                );
+                println!("{label}");
+                assert!(percent < 1.0, "{label}");
+                assert!(colours.len() >= 4, "{label}");
             }
         }
     }

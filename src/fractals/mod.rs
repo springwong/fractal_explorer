@@ -7,6 +7,7 @@
 //! export all work from this table.
 
 mod golden_silver;
+mod lattice;
 
 use crate::camera::ViewBounds;
 use crate::renderer::{reference_orbit, FractalUniforms, Shader};
@@ -29,6 +30,8 @@ pub const MIN_ITERATIONS: u32 = 64;
 
 // Deepest useful zoom: the camera centre is an f64, which perturbation can use fully
 const PERTURBATION_ZOOM: f64 = 1e13;
+// Deepest zoom for shaders working in plain f32 on a picture about one unit across
+const F32_ZOOM: f64 = 1e4;
 
 /// How a fractal gets onto the screen
 #[derive(Debug)]
@@ -129,7 +132,7 @@ static NOVA: FractalInfo = FractalInfo {
     bounds: ViewBounds::new(-3.0, -3.0, 3.0, 3.0, 0.2, PERTURBATION_ZOOM),
     render: RenderMode::PerPixel {
         shader: Shader::standard(include_str!("../shaders/nova.wgsl")),
-        deep_shader: Some(Shader::perturbation(include_str!("../shaders/nova_f64.wgsl"))),
+        deep_shader: Some(Shader::newton_perturbation(include_str!("../shaders/nova_f64.wgsl"))),
     },
 };
 
@@ -149,6 +152,116 @@ static GOLDEN_SILVER: FractalInfo = FractalInfo {
     },
 };
 
+static MULTIBROT: FractalInfo = FractalInfo {
+    id: 7,
+    name: "Multibrot",
+    default_center: DVec2::new(0.0, 0.0),
+    default_zoom: 0.6,
+    bounds: ViewBounds::new(-2.0, -2.0, 2.0, 2.0, 0.2, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::standard(include_str!("../shaders/multibrot.wgsl")),
+        deep_shader: Some(Shader::rebasing_perturbation(include_str!("../shaders/multibrot_f64.wgsl"))),
+    },
+};
+
+static CELTIC: FractalInfo = FractalInfo {
+    id: 8,
+    name: "Celtic",
+    default_center: DVec2::new(-0.5, 0.0),
+    default_zoom: 0.5,
+    bounds: ViewBounds::new(-3.0, -2.0, 2.0, 2.0, 0.2, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::standard(include_str!("../shaders/celtic.wgsl")),
+        deep_shader: Some(Shader::rebasing_perturbation(include_str!("../shaders/celtic_f64.wgsl"))),
+    },
+};
+
+static BUFFALO: FractalInfo = FractalInfo {
+    id: 9,
+    name: "Buffalo",
+    // The body sits above the real axis
+    default_center: DVec2::new(-0.4, 0.5),
+    default_zoom: 0.4,
+    bounds: ViewBounds::new(-3.0, -2.5, 2.0, 2.5, 0.2, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::standard(include_str!("../shaders/buffalo.wgsl")),
+        deep_shader: Some(Shader::rebasing_perturbation(include_str!("../shaders/buffalo_f64.wgsl"))),
+    },
+};
+
+static PERPENDICULAR: FractalInfo = FractalInfo {
+    id: 10,
+    name: "Perpendicular",
+    default_center: DVec2::new(-0.5, 0.0),
+    default_zoom: 0.5,
+    bounds: ViewBounds::new(-3.0, -2.0, 2.0, 2.0, 0.2, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::standard(include_str!("../shaders/perpendicular.wgsl")),
+        deep_shader: Some(Shader::rebasing_perturbation(include_str!("../shaders/perpendicular_f64.wgsl"))),
+    },
+};
+
+static NEWTON: FractalInfo = FractalInfo {
+    id: 11,
+    name: "Newton",
+    default_center: DVec2::new(0.0, 0.0),
+    default_zoom: 0.5,
+    bounds: ViewBounds::new(-3.0, -3.0, 3.0, 3.0, 0.2, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::newton(include_str!("../shaders/newton.wgsl")),
+        deep_shader: Some(Shader::newton_perturbation(include_str!("../shaders/newton_f64.wgsl"))),
+    },
+};
+
+static SIERPINSKI_TRIANGLE: FractalInfo = FractalInfo {
+    id: 12,
+    name: "Sierpinski Triangle",
+    default_center: DVec2::new(0.5, 0.433),
+    default_zoom: 0.9,
+    // Integer coordinates on the GPU (see lattice.rs): exact as deep as the f64 centre goes
+    bounds: ViewBounds::new(0.0, 0.0, 1.0, 0.866, 0.3, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::lattice(include_str!("../shaders/sierpinski_triangle.wgsl")),
+        deep_shader: None,
+    },
+};
+
+static SIERPINSKI_CARPET: FractalInfo = FractalInfo {
+    id: 13,
+    name: "Sierpinski Carpet",
+    default_center: DVec2::new(0.5, 0.5),
+    default_zoom: 0.9,
+    bounds: ViewBounds::new(0.0, 0.0, 1.0, 1.0, 0.3, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::lattice(include_str!("../shaders/sierpinski_carpet.wgsl")),
+        deep_shader: None,
+    },
+};
+
+static KOCH_SNOWFLAKE: FractalInfo = FractalInfo {
+    id: 14,
+    name: "Koch Snowflake",
+    default_center: DVec2::new(0.0, 0.0),
+    default_zoom: 0.7,
+    bounds: ViewBounds::new(-0.7, -0.7, 0.7, 0.7, 0.2, F32_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::standard(include_str!("../shaders/koch_snowflake.wgsl")),
+        deep_shader: None,
+    },
+};
+
+static APOLLONIAN: FractalInfo = FractalInfo {
+    id: 15,
+    name: "Apollonian Gasket",
+    default_center: DVec2::new(0.0, 0.0),
+    default_zoom: 0.45,
+    bounds: ViewBounds::new(-1.0, -1.0, 1.0, 1.0, 0.2, F32_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::standard(include_str!("../shaders/apollonian.wgsl")),
+        deep_shader: None,
+    },
+};
+
 /// Enum for all supported fractal types, with their live parameters
 #[derive(Clone, PartialEq, Debug)]
 pub enum FractalType {
@@ -159,12 +272,25 @@ pub enum FractalType {
     Buddhabrot,
     Nova { c: Vec2 },
     GoldenSilver,
+    /// z³ + c
+    Multibrot,
+    Celtic,
+    Buffalo,
+    /// Perpendicular Mandelbrot
+    Perpendicular,
+    /// Newton's method for z³ - 1, coloured by root
+    Newton,
+    SierpinskiTriangle,
+    SierpinskiCarpet,
+    KochSnowflake,
+    Apollonian,
 }
 
 impl FractalType {
     /// Every fractal with its default parameters, in menu order.
-    /// Entry `n` is selected with keyboard key `n + 1`.
-    pub const ALL: [FractalType; 7] = [
+    /// The first nine are selected with keyboard keys 1-9; the fractal picker gives
+    /// every entry a letter.
+    pub const ALL: [FractalType; 16] = [
         FractalType::Mandelbrot,
         FractalType::Julia { c: Vec2::new(-0.7, 0.27015) },
         FractalType::BurningShip,
@@ -172,6 +298,15 @@ impl FractalType {
         FractalType::Buddhabrot,
         FractalType::Nova { c: Vec2::new(1.0, 0.0) },
         FractalType::GoldenSilver,
+        FractalType::Multibrot,
+        FractalType::Celtic,
+        FractalType::Buffalo,
+        FractalType::Perpendicular,
+        FractalType::Newton,
+        FractalType::SierpinskiTriangle,
+        FractalType::SierpinskiCarpet,
+        FractalType::KochSnowflake,
+        FractalType::Apollonian,
     ];
 
     /// The static description of this fractal
@@ -184,6 +319,15 @@ impl FractalType {
             FractalType::Buddhabrot => &BUDDHABROT,
             FractalType::Nova { .. } => &NOVA,
             FractalType::GoldenSilver => &GOLDEN_SILVER,
+            FractalType::Multibrot => &MULTIBROT,
+            FractalType::Celtic => &CELTIC,
+            FractalType::Buffalo => &BUFFALO,
+            FractalType::Perpendicular => &PERPENDICULAR,
+            FractalType::Newton => &NEWTON,
+            FractalType::SierpinskiTriangle => &SIERPINSKI_TRIANGLE,
+            FractalType::SierpinskiCarpet => &SIERPINSKI_CARPET,
+            FractalType::KochSnowflake => &KOCH_SNOWFLAKE,
+            FractalType::Apollonian => &APOLLONIAN,
         }
     }
 
@@ -268,26 +412,51 @@ impl FractalType {
             FractalType::Tricorn => reference_orbit(DVec2::ZERO, max_iter, ESCAPE_RADIUS2, |z| {
                 Some(DVec2::new(z.x * z.x - z.y * z.y + center.x, -2.0 * z.x * z.y + center.y))
             }),
+            // z -> z³ + c with z_0 = 0, c = centre
+            FractalType::Multibrot => reference_orbit(DVec2::ZERO, max_iter, ESCAPE_RADIUS2, |z| {
+                let (x2, y2) = (z.x * z.x, z.y * z.y);
+                Some(DVec2::new(z.x * (x2 - 3.0 * y2) + center.x, z.y * (3.0 * x2 - y2) + center.y))
+            }),
+            // z -> |Re(z²)| + i Im(z²) + c with z_0 = 0, c = centre
+            FractalType::Celtic => reference_orbit(DVec2::ZERO, max_iter, ESCAPE_RADIUS2, |z| {
+                Some(DVec2::new((z.x * z.x - z.y * z.y).abs() + center.x, 2.0 * z.x * z.y + center.y))
+            }),
+            // z -> |Re(z²)| - i|Im(z²)| + c with z_0 = 0, c = centre
+            FractalType::Buffalo => reference_orbit(DVec2::ZERO, max_iter, ESCAPE_RADIUS2, |z| {
+                Some(DVec2::new((z.x * z.x - z.y * z.y).abs() + center.x, -2.0 * (z.x * z.y).abs() + center.y))
+            }),
+            // z -> (|x| - iy)² + c with z_0 = 0, c = centre
+            FractalType::Perpendicular => reference_orbit(DVec2::ZERO, max_iter, ESCAPE_RADIUS2, |z| {
+                Some(DVec2::new(z.x * z.x - z.y * z.y + center.x, -2.0 * z.x.abs() * z.y + center.y))
+            }),
             // z -> z² + c with z_0 = centre, c = the fixed parameter
             FractalType::Julia { .. } => reference_orbit(center, max_iter, ESCAPE_RADIUS2, |z| {
                 Some(DVec2::new(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y))
             }),
             // z -> z - (z³ - 1) / (3z²) + c = 2z/3 + 1/(3z²) + c with z_0 = centre.
-            // Undefined at the pole z = 0; same limits as the shader.
-            FractalType::Nova { .. } => reference_orbit(center, max_iter, 1e8, |z| {
+            // Undefined at the pole z = 0; same limits as the shader. Newton is c = 0.
+            FractalType::Nova { .. } | FractalType::Newton => reference_orbit(center, max_iter, 1e8, |z| {
                 let z2 = DVec2::new(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y);
                 let m = z2.length_squared();
                 (9.0 * m >= 1e-20).then(|| z * (2.0 / 3.0) + DVec2::new(z2.x, -z2.y) / (3.0 * m) + c)
             }),
-            FractalType::Buddhabrot | FractalType::GoldenSilver => return None,
+            FractalType::Buddhabrot
+            | FractalType::GoldenSilver
+            | FractalType::SierpinskiTriangle
+            | FractalType::SierpinskiCarpet
+            | FractalType::KochSnowflake
+            | FractalType::Apollonian => return None,
         })
     }
 
     /// Fill any fractal-specific uniform slots for the view the uniforms describe,
     /// rendered at `width` x `height`. `FractalUniforms::for_view` calls this.
     pub fn prepare_uniforms(&self, uniforms: &mut FractalUniforms, width: u32, height: u32) {
-        if let FractalType::GoldenSilver = self {
-            golden_silver::apply_view(uniforms, width, height);
+        match self {
+            FractalType::GoldenSilver => golden_silver::apply_view(uniforms, width, height),
+            FractalType::SierpinskiTriangle => lattice::apply_view(uniforms, &lattice::SIERPINSKI_TRIANGLE, height),
+            FractalType::SierpinskiCarpet => lattice::apply_view(uniforms, &lattice::SIERPINSKI_CARPET, height),
+            _ => {}
         }
     }
 }

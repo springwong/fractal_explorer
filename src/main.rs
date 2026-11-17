@@ -11,7 +11,7 @@ use fractals::{FractalType, MAX_ITERATIONS, MIN_ITERATIONS};
 use glam::{UVec2, Vec2};
 use renderer::{ComputePipeline, GpuContext, RenderPipeline, View};
 use export::{ExportResolution, VideoSettings};
-use ui::{ControlPanel, PanelAction, PaletteEditor, RecordingState, UiContext};
+use ui::{fractal_for_letter, ControlPanel, FractalPicker, PanelAction, PaletteEditor, RecordingState, UiContext};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -101,6 +101,11 @@ struct App {
     current_fractal: FractalType,
     current_color: ColorScheme,
 
+    /// Overlay for choosing a fractal by picture (Space)
+    fractal_picker: FractalPicker,
+    /// Fractal chosen in the picker with the mouse, applied at the start of the next frame
+    pending_fractal: Option<FractalType>,
+
     // Palette state
     palette_editor: PaletteEditor,
     palette_dirty: bool,
@@ -152,6 +157,8 @@ impl App {
             max_iter: 256,
             current_fractal: FractalType::Mandelbrot,
             current_color: ColorScheme::default(),
+            fractal_picker: FractalPicker::default(),
+            pending_fractal: None,
             palette_editor: PaletteEditor::new(),
             palette_dirty: true, // Upload initial palette on first frame
             pending_export: None,
@@ -205,7 +212,14 @@ impl App {
                 return;
             }
         };
-        let GpuState { mut gpu, compute, render, ui } = state;
+        let GpuState { mut gpu, compute, render, mut ui } = state;
+
+        // Hand the fractal picker its preview images
+        let thumbnails = compute
+            .thumbnail_views()
+            .map(|view| ui.egui_renderer.register_native_texture(&gpu.device, view, wgpu::FilterMode::Linear))
+            .collect();
+        self.fractal_picker.set_thumbnails(thumbnails);
 
         // The surface may have been configured before the canvas was laid out
         // (browser). Reconfigure with the actual size.
@@ -243,6 +257,15 @@ impl App {
         self.camera.center = self.current_fractal.default_center();
         self.camera.zoom = self.current_fractal.default_zoom();
         log::info!("Switched to: {}", self.current_fractal.name());
+    }
+
+    /// Switch to a fractal chosen in the fractal picker. The picker offers every
+    /// fractal, so this leaves the linked split view if it is on.
+    fn pick_fractal(&mut self, fractal: FractalType) {
+        if self.linked_mode {
+            self.toggle_linked_mode();
+        }
+        self.select_fractal(fractal);
     }
 
     /// Move the Julia / Nova parameter c by `delta`
@@ -289,6 +312,9 @@ impl App {
         if self.pending_toggle_linked {
             self.pending_toggle_linked = false;
             self.toggle_linked_mode();
+        }
+        if let Some(fractal) = self.pending_fractal.take() {
+            self.pick_fractal(fractal);
         }
 
         // Keep the view inside the current fractal's bounds
@@ -373,6 +399,11 @@ impl App {
 
             // Show palette editor if open
             editor_palette_result = self.palette_editor.show(ctx);
+
+            // Fractal picker, over everything else
+            if let Some(fractal) = self.fractal_picker.show(ctx, &self.current_fractal) {
+                self.pending_fractal = Some(fractal);
+            }
         });
 
         // Handle panel actions
@@ -389,6 +420,9 @@ impl App {
             }
             PanelAction::ToggleLinkedMode => {
                 self.pending_toggle_linked = true;
+            }
+            PanelAction::OpenFractalPicker => {
+                self.fractal_picker.open();
             }
             PanelAction::StartRecording(settings) => {
                 self.pending_record = Some(settings);
@@ -450,6 +484,7 @@ impl App {
             || self.rendered_view.as_ref() != Some(&view_key);
 
         // Upload palette LUT if dirty
+        let palette_changed = self.palette_dirty;
         if self.palette_dirty {
             let palette = self.current_color.get_palette();
             let lut = palette.generate_lut();
@@ -501,6 +536,12 @@ impl App {
         // In linked mode, also compute the Julia side
         if self.linked_mode && needs_compute {
             compute.render_julia(&gpu.device, &gpu.queue, &mut encoder, self.linked_julia_c, &julia_view);
+        }
+
+        // Keep the fractal picker's previews current while it is on screen
+        let previews_stale = self.fractal_picker.take_stale();
+        if self.fractal_picker.is_open() {
+            compute.render_thumbnails(&gpu.device, &gpu.queue, &mut encoder, previews_stale || palette_changed);
         }
 
         // Render fractal to surface
@@ -782,6 +823,25 @@ impl App {
 
     fn handle_keyboard(&mut self, event: KeyEvent) {
         if event.state != ElementState::Pressed {
+            return;
+        }
+
+        // Space opens and closes the fractal picker
+        if event.logical_key == Key::Named(NamedKey::Space) {
+            if !event.repeat {
+                self.fractal_picker.toggle();
+            }
+            return;
+        }
+        // While the picker is open the keyboard belongs to it: a card's letter
+        // chooses that fractal, and no other shortcut acts on the hidden view
+        if self.fractal_picker.is_open() {
+            if let Key::Character(ref c) = event.logical_key {
+                if let Some(fractal) = fractal_for_letter(c) {
+                    self.fractal_picker.close();
+                    self.pick_fractal(fractal);
+                }
+            }
             return;
         }
 
@@ -1117,6 +1177,14 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         match event {
+            // Escape closes the fractal picker first; only then does it exit
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
+                ..
+            } if self.fractal_picker.is_open() => {
+                self.fractal_picker.close();
+            }
+
             WindowEvent::CloseRequested
             | WindowEvent::KeyboardInput {
                 event:
