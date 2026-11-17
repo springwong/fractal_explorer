@@ -22,11 +22,29 @@
             display: block !important;
             touch-action: none;
         }
+        /* Shown by the app when it cannot start (e.g. no WebGPU) */
+        #fatal-error {
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            box-sizing: border-box;
+            background: #000;
+            color: #e8e8e8;
+            font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+        #fatal-error[hidden] { display: none; }
+        #fatal-error div { max-width: 34em; }
+        #fatal-error h1 { font-size: 20px; margin: 0 0 8px; }
+        #fatal-error p { margin: 0; color: #b0b0b0; }
     </style>
     
 <script type="module">
-import init, * as bindings from '/fractal_explorer/fractal-explorer-5a47183af74289a8.js';
-const wasm = await init({ module_or_path: '/fractal_explorer/fractal-explorer-5a47183af74289a8_bg.wasm' });
+import init, * as bindings from '/fractal_explorer/fractal-explorer-1ee037c8178ba7c.js';
+const wasm = await init({ module_or_path: '/fractal_explorer/fractal-explorer-1ee037c8178ba7c_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -35,8 +53,14 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-<link rel="modulepreload" href="/fractal_explorer/fractal-explorer-5a47183af74289a8.js" crossorigin="anonymous" integrity="sha384-nRh1oBcsvYJGlEmZ1Liao5WDGE1LAYYoxd9v5U0LPaQB62vK9T/PvnKYORB0YN70"><link rel="preload" href="/fractal_explorer/fractal-explorer-5a47183af74289a8_bg.wasm" crossorigin="anonymous" integrity="sha384-r8KNv/4ZJ9FhkqRq7BpDr59koAeQUCUuXGISu831D9Zy1Hj35dfwsoaBH3tXV+k+" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/fractal_explorer/fractal-explorer-1ee037c8178ba7c.js" crossorigin="anonymous" integrity="sha384-rVD0NhPoMAGNTohawMBEialTazDYO7gtcX0h2nVqrBL+gqFFQZBhPf5jIXbeAu9B"><link rel="preload" href="/fractal_explorer/fractal-explorer-1ee037c8178ba7c_bg.wasm" crossorigin="anonymous" integrity="sha384-7+oGatCm4gqY0oGY6NWNVNYMF6uOBuEeKP4ye1MBYaxSNcVnlbBzx031z3YWeEsc" as="fetch" type="application/wasm"></head>
 <body>
+<div id="fatal-error" role="alert" hidden>
+    <div>
+        <h1>Fractal Explorer can't start</h1>
+        <p class="message"></p>
+    </div>
+</div>
 <script>
 // Workaround: wgpu 22 sends maxInterStageShaderComponents which was
 // removed from the WebGPU spec (Chrome 130+). Strip it before the call.
