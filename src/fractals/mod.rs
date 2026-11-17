@@ -7,6 +7,7 @@
 //! export all work from this table.
 
 mod golden_silver;
+mod lattice;
 
 use crate::camera::ViewBounds;
 use crate::renderer::{reference_orbit, FractalUniforms, Shader};
@@ -29,6 +30,8 @@ pub const MIN_ITERATIONS: u32 = 64;
 
 // Deepest useful zoom: the camera centre is an f64, which perturbation can use fully
 const PERTURBATION_ZOOM: f64 = 1e13;
+// Deepest zoom for shaders working in plain f32 on a picture about one unit across
+const F32_ZOOM: f64 = 1e4;
 
 /// How a fractal gets onto the screen
 #[derive(Debug)]
@@ -210,6 +213,55 @@ static NEWTON: FractalInfo = FractalInfo {
     },
 };
 
+static SIERPINSKI_TRIANGLE: FractalInfo = FractalInfo {
+    id: 12,
+    name: "Sierpinski Triangle",
+    default_center: DVec2::new(0.5, 0.433),
+    default_zoom: 0.9,
+    // Integer coordinates on the GPU (see lattice.rs): exact as deep as the f64 centre goes
+    bounds: ViewBounds::new(0.0, 0.0, 1.0, 0.866, 0.3, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::lattice(include_str!("../shaders/sierpinski_triangle.wgsl")),
+        deep_shader: None,
+    },
+};
+
+static SIERPINSKI_CARPET: FractalInfo = FractalInfo {
+    id: 13,
+    name: "Sierpinski Carpet",
+    default_center: DVec2::new(0.5, 0.5),
+    default_zoom: 0.9,
+    bounds: ViewBounds::new(0.0, 0.0, 1.0, 1.0, 0.3, PERTURBATION_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::lattice(include_str!("../shaders/sierpinski_carpet.wgsl")),
+        deep_shader: None,
+    },
+};
+
+static KOCH_SNOWFLAKE: FractalInfo = FractalInfo {
+    id: 14,
+    name: "Koch Snowflake",
+    default_center: DVec2::new(0.0, 0.0),
+    default_zoom: 0.7,
+    bounds: ViewBounds::new(-0.7, -0.7, 0.7, 0.7, 0.2, F32_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::standard(include_str!("../shaders/koch_snowflake.wgsl")),
+        deep_shader: None,
+    },
+};
+
+static APOLLONIAN: FractalInfo = FractalInfo {
+    id: 15,
+    name: "Apollonian Gasket",
+    default_center: DVec2::new(0.0, 0.0),
+    default_zoom: 0.45,
+    bounds: ViewBounds::new(-1.0, -1.0, 1.0, 1.0, 0.2, F32_ZOOM),
+    render: RenderMode::PerPixel {
+        shader: Shader::standard(include_str!("../shaders/apollonian.wgsl")),
+        deep_shader: None,
+    },
+};
+
 /// Enum for all supported fractal types, with their live parameters
 #[derive(Clone, PartialEq, Debug)]
 pub enum FractalType {
@@ -228,13 +280,17 @@ pub enum FractalType {
     Perpendicular,
     /// Newton's method for z³ - 1, coloured by root
     Newton,
+    SierpinskiTriangle,
+    SierpinskiCarpet,
+    KochSnowflake,
+    Apollonian,
 }
 
 impl FractalType {
     /// Every fractal with its default parameters, in menu order.
     /// The first nine are selected with keyboard keys 1-9; the fractal picker gives
     /// every entry a letter.
-    pub const ALL: [FractalType; 12] = [
+    pub const ALL: [FractalType; 16] = [
         FractalType::Mandelbrot,
         FractalType::Julia { c: Vec2::new(-0.7, 0.27015) },
         FractalType::BurningShip,
@@ -247,6 +303,10 @@ impl FractalType {
         FractalType::Buffalo,
         FractalType::Perpendicular,
         FractalType::Newton,
+        FractalType::SierpinskiTriangle,
+        FractalType::SierpinskiCarpet,
+        FractalType::KochSnowflake,
+        FractalType::Apollonian,
     ];
 
     /// The static description of this fractal
@@ -264,6 +324,10 @@ impl FractalType {
             FractalType::Buffalo => &BUFFALO,
             FractalType::Perpendicular => &PERPENDICULAR,
             FractalType::Newton => &NEWTON,
+            FractalType::SierpinskiTriangle => &SIERPINSKI_TRIANGLE,
+            FractalType::SierpinskiCarpet => &SIERPINSKI_CARPET,
+            FractalType::KochSnowflake => &KOCH_SNOWFLAKE,
+            FractalType::Apollonian => &APOLLONIAN,
         }
     }
 
@@ -376,15 +440,23 @@ impl FractalType {
                 let m = z2.length_squared();
                 (9.0 * m >= 1e-20).then(|| z * (2.0 / 3.0) + DVec2::new(z2.x, -z2.y) / (3.0 * m) + c)
             }),
-            FractalType::Buddhabrot | FractalType::GoldenSilver => return None,
+            FractalType::Buddhabrot
+            | FractalType::GoldenSilver
+            | FractalType::SierpinskiTriangle
+            | FractalType::SierpinskiCarpet
+            | FractalType::KochSnowflake
+            | FractalType::Apollonian => return None,
         })
     }
 
     /// Fill any fractal-specific uniform slots for the view the uniforms describe,
     /// rendered at `width` x `height`. `FractalUniforms::for_view` calls this.
     pub fn prepare_uniforms(&self, uniforms: &mut FractalUniforms, width: u32, height: u32) {
-        if let FractalType::GoldenSilver = self {
-            golden_silver::apply_view(uniforms, width, height);
+        match self {
+            FractalType::GoldenSilver => golden_silver::apply_view(uniforms, width, height),
+            FractalType::SierpinskiTriangle => lattice::apply_view(uniforms, &lattice::SIERPINSKI_TRIANGLE, height),
+            FractalType::SierpinskiCarpet => lattice::apply_view(uniforms, &lattice::SIERPINSKI_CARPET, height),
+            _ => {}
         }
     }
 }

@@ -11,6 +11,7 @@ const BINDINGS_ORBIT: &str = include_str!("../shaders/bindings_orbit.wgsl");
 const PALETTE: &str = include_str!("../shaders/palette.wgsl");
 const VIEW: &str = include_str!("../shaders/view.wgsl");
 const REBASING: &str = include_str!("../shaders/rebasing.wgsl");
+const LATTICE: &str = include_str!("../shaders/lattice.wgsl");
 const NEWTON_CORE: &str = include_str!("../shaders/newton_core.wgsl");
 const NEWTON_PERTURBATION: &str = include_str!("../shaders/newton_perturbation.wgsl");
 
@@ -31,6 +32,9 @@ pub enum ShaderKind {
     /// Newton's method by perturbation (`newton_perturbation.wgsl`); the body only
     /// picks the colouring. Same bindings as `Perturbation`.
     NewtonPerturbation,
+    /// Exact integer pixel coordinates (`lattice.wgsl`) for fractals read off the
+    /// digits of a point. Same bindings as `Standard`.
+    Lattice,
 }
 
 /// A per-pixel fractal compute shader: a fractal-specific body plus the shared
@@ -69,6 +73,11 @@ impl Shader {
         Self { body, kind: ShaderKind::NewtonPerturbation }
     }
 
+    /// Shader working on the integer coordinates of the shared lattice module
+    pub const fn lattice(body: &'static str) -> Self {
+        Self { body, kind: ShaderKind::Lattice }
+    }
+
     /// Whether the shader reads a reference orbit (and so needs the orbit bind group)
     pub fn uses_orbit(&self) -> bool {
         matches!(
@@ -84,6 +93,7 @@ impl Shader {
             ShaderKind::Perturbation => &[COMMON, BINDINGS_ORBIT, PALETTE, VIEW],
             ShaderKind::RebasingPerturbation => &[COMMON, BINDINGS_ORBIT, PALETTE, VIEW, REBASING],
             ShaderKind::Newton => &[COMMON, BINDINGS_STANDARD, PALETTE, VIEW, NEWTON_CORE],
+            ShaderKind::Lattice => &[COMMON, BINDINGS_STANDARD, PALETTE, VIEW, LATTICE],
             ShaderKind::NewtonPerturbation => {
                 &[COMMON, BINDINGS_ORBIT, PALETTE, VIEW, NEWTON_CORE, NEWTON_PERTURBATION]
             }

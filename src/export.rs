@@ -510,7 +510,16 @@ mod tests {
             DVec2::new(2.0e-6, 1.0e-6),
         ];
         // The newer fractals get a point on their own edge
-        let deep_centers = deep_centers.into_iter().chain(FractalType::ALL[7..].iter().map(boundary_point));
+        let deep_centers = deep_centers.into_iter().chain(FractalType::ALL[7..12].iter().map(boundary_point)).chain([
+            // A corner of the triangle and of the carpet: the same picture at every zoom
+            DVec2::ZERO,
+            DVec2::ZERO,
+            // A corner of the snowflake's triangle, which is on its edge
+            DVec2::new(-0.5, -(3f64.sqrt()) / 6.0),
+            // Where the top inner circle touches the unit circle
+            DVec2::new(0.0, 1.0),
+        ]);
+        assert_eq!(deep_centers.clone().count(), FractalType::ALL.len());
 
         for (fractal, deep_center) in FractalType::ALL.iter().zip(deep_centers) {
             let views = [
@@ -639,7 +648,7 @@ mod tests {
                 escape_time(DVec2::ZERO, n, |z| DVec2::new(z.x * z.x - z.y * z.y + p.x, -2.0 * z.x.abs() * z.y + p.y))
             }
             FractalType::Newton => newton_value(p, n),
-            FractalType::Buddhabrot | FractalType::GoldenSilver => unreachable!(),
+            _ => unreachable!("{} has no f64 twin here", fractal.name()),
         }
     }
 
@@ -798,7 +807,7 @@ mod tests {
             (nova, nova_point),
         ]
         .into_iter()
-        .chain(FractalType::ALL[7..].iter().map(|f| (f.clone(), boundary_point(f))))
+        .chain(FractalType::ALL[7..12].iter().map(|f| (f.clone(), boundary_point(f))))
         .collect::<Vec<_>>();
 
         for (fractal, center) in &cases {
@@ -822,6 +831,133 @@ mod tests {
                 } else {
                     assert!(a.wrong_value < 5.0, "{label}");
                 }
+            }
+        }
+    }
+
+    // ---- Digit fractals against a CPU f64 reference -----------------------------------
+
+    /// What a point of a digit fractal is
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Digits {
+        Outside,
+        /// In a hole of this depth (0 = the biggest)
+        Hole(u32),
+        /// On the fractal itself, as far as f64 can tell
+        Set,
+    }
+
+    /// The Sierpinski triangle shader's classification in f64
+    fn triangle_point(p: DVec2) -> Digits {
+        let (mut u, mut v) = (p.x - p.y / 3f64.sqrt(), 2.0 * p.y / 3f64.sqrt());
+        if u < 0.0 || v < 0.0 || u + v >= 1.0 {
+            return Digits::Outside;
+        }
+        for depth in 0..45 {
+            (u, v) = (2.0 * u, 2.0 * v);
+            if u >= 1.0 {
+                u -= 1.0;
+            } else if v >= 1.0 {
+                v -= 1.0;
+            } else if u + v >= 1.0 {
+                return Digits::Hole(depth);
+            }
+        }
+        Digits::Set
+    }
+
+    /// The Sierpinski carpet shader's classification in f64
+    fn carpet_point(p: DVec2) -> Digits {
+        let (mut x, mut y) = (p.x, p.y);
+        if !(0.0..1.0).contains(&x) || !(0.0..1.0).contains(&y) {
+            return Digits::Outside;
+        }
+        for depth in 0..28 {
+            (x, y) = (3.0 * x, 3.0 * y);
+            let (digit_x, digit_y) = (x.floor(), y.floor());
+            if digit_x == 1.0 && digit_y == 1.0 {
+                return Digits::Hole(depth);
+            }
+            (x, y) = (x - digit_x, y - digit_y);
+        }
+        Digits::Set
+    }
+
+    /// The Sierpinski triangle and carpet work in integers on the GPU. They must show
+    /// what an f64 CPU render shows at every zoom, including where the coordinates no
+    /// longer fit one 32-bit word.
+    #[test]
+    fn digit_fractals_match_f64_reference() {
+        let Some((device, queue)) = headless_device() else {
+            eprintln!("no GPU adapter available; skipping");
+            return;
+        };
+        let (w, h) = (160u32, 120u32);
+        // Palette index in red; green tells a hole (255) from everything else (0)
+        let mut lut = [0u8; 1024];
+        for i in 0..256 {
+            lut[i * 4..i * 4 + 4].copy_from_slice(&[i as u8, 255, 0, 255]);
+        }
+        type Classify = fn(DVec2) -> Digits;
+        // Each centre is a point of the fractal, so there are holes at every zoom
+        let cases: [(FractalType, Classify, f64, DVec2); 3] = [
+            // u = 1/3, v = 2/15: their binary digits never coincide
+            (FractalType::SierpinskiTriangle, triangle_point, 2.0, DVec2::new(0.4, 3f64.sqrt() / 15.0)),
+            // x = 0.0202..., y = 0.1111... in base 3
+            (FractalType::SierpinskiCarpet, carpet_point, 3.0, DVec2::new(0.25, 0.5)),
+            // A corner of the carpet: outside on two sides
+            (FractalType::SierpinskiCarpet, carpet_point, 3.0, DVec2::ZERO),
+        ];
+
+        for (fractal, classify, base, center) in &cases {
+            for zoom in [1.0, 1.0e3, 1.0e7, 1.0e11] {
+                let view = View { center: *center, zoom, rotation: 0.0, max_iter: 256 };
+                let mut offscreen = Offscreen::new(&device, &queue, w, h, &lut);
+                offscreen.render(&device, &queue, fractal, &view).unwrap();
+                let gpu = offscreen.read_pixels(&device).unwrap();
+
+                let reference: Vec<Digits> = (0..w * h)
+                    .map(|i| {
+                        let (x, y) = ((i % w) as f64, (i / w) as f64);
+                        let offset = DVec2::new(x - w as f64 / 2.0, -(y - h as f64 / 2.0)) / (h as f64 * zoom);
+                        classify(*center + offset)
+                    })
+                    .collect();
+                // Side of a hole in pixels
+                let hole_pixels = |depth: u32| base.powi(-(depth as i32 + 1)) * h as f64 * zoom;
+
+                let mut wrong = 0;
+                let mut colours = std::collections::HashSet::new();
+                for y in 0..h as i32 {
+                    for x in 0..w as i32 {
+                        let pixel = &gpu[((y as u32 * w + x as u32) * 4) as usize..][..4];
+                        colours.insert((pixel[0], pixel[1]));
+                        let is_hole = pixel[1] == 255;
+                        let ok = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (x + dx, y + dy))).any(|(nx, ny)| {
+                            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                                return false;
+                            }
+                            match reference[(ny as u32 * w + nx as u32) as usize] {
+                                Digits::Outside | Digits::Set => !is_hole,
+                                Digits::Hole(depth) => {
+                                    let want = (((1.0 + 2.9 * depth as f64) * 0.05).fract() * 255.0) as i32;
+                                    // Holes around a pixel across may or may not be drawn
+                                    (is_hole && (want - pixel[0] as i32).abs() <= 2)
+                                        || (!is_hole && hole_pixels(depth) < 4.0)
+                                }
+                            }
+                        });
+                        wrong += !ok as u32;
+                    }
+                }
+                let percent = wrong as f64 * 100.0 / (w * h) as f64;
+                let label = format!(
+                    "{} at ({}, {}) zoom {zoom:.0e}: {percent:.2}% wrong, {} colours",
+                    fractal.name(), center.x, center.y, colours.len()
+                );
+                println!("{label}");
+                assert!(percent < 1.0, "{label}");
+                assert!(colours.len() >= 4, "{label}");
             }
         }
     }
